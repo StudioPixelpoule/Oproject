@@ -10,8 +10,11 @@ import toast from 'react-hot-toast';
 const versionSchema = z.object({
   version: z.string().min(1, 'Le numéro de version est requis'),
   description: z.string().optional(),
-  file: z.instanceof(File).refine((file) => {
-    return file.size <= 100 * 1024 * 1024; // 100MB max
+  file: z.any().refine((file) => {
+    if (!(file instanceof FileList)) return false;
+    if (file.length === 0) return false;
+    const firstFile = file[0];
+    return firstFile.size <= 100 * 1024 * 1024; // 100MB max
   }, 'Le fichier ne doit pas dépasser 100MB'),
 });
 
@@ -68,7 +71,12 @@ export default function VersionsSection({ projectId }: VersionsSectionProps) {
       const user = (await supabase.auth.getUser()).data.user;
       if (!user) throw new Error('User not authenticated');
 
-      const file = data.file[0];
+      const fileList = data.file as FileList;
+      if (!fileList || fileList.length === 0) {
+        throw new Error('Aucun fichier sélectionné');
+      }
+
+      const file = fileList[0];
       const filePath = `${user.id}/${projectId}/${data.version}/${file.name}`;
 
       // Upload file to storage
@@ -218,7 +226,9 @@ export default function VersionsSection({ projectId }: VersionsSectionProps) {
                   className="input"
                 />
                 {errors.file && (
-                  <p className="text-red-500 text-sm mt-1">{errors.file.message}</p>
+                  <p className="text-red-500 text-sm mt-1">
+                    {errors.file.message || 'Le fichier est requis'}
+                  </p>
                 )}
               </div>
             </div>

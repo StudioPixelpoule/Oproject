@@ -36,4 +36,36 @@
   .icon {
     @apply text-white;
   }
+
+  .tabs {
+    @apply flex flex-wrap md:flex-nowrap gap-1 p-1 bg-white/5 rounded-xl overflow-x-auto;
+  }
+
+  .tab {
+    @apply px-4 py-2 rounded-lg flex items-center gap-2 transition-all duration-200 relative whitespace-nowrap flex-shrink-0 justify-center;
+  }
+
+  .tab-active {
+    @apply bg-primary text-white;
+  }
+
+  .tab-inactive {
+    @apply text-white/60 hover:text-white hover:bg-white/5;
+  }
+
+  .tab-badge {
+    @apply absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary;
+  }
+
+  .tab-content {
+    @apply mt-6 relative;
+  }
+
+  .modal {
+    @apply fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4;
+  }
+
+  .modal-content {
+    @apply bg-background rounded-2xl border border-white/10 p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto;
+  }
 }

@@ -1,40 +1,39 @@
 import React, { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
 import { supabase } from '../lib/supabase';
-import { ArrowLeft, Info, StickyNote, FileArchive, Save, Loader2 } from 'lucide-react';
+import { ArrowLeft, Info, StickyNote, FileArchive, Settings, Loader2, ListTodo, Book, Settings2, Package } from 'lucide-react';
 import toast from 'react-hot-toast';
-import type { Project, ProjectType, ProjectStatus, DatabaseProvider, AI_PROVIDERS } from '../types/database';
+import type { Project } from '../types/database';
 import NotesSection from '../components/NotesSection';
 import VersionsSection from '../components/VersionsSection';
+import TasksSection from '../components/TasksSection';
+import DocumentationSection from '../components/DocumentationSection';
+import EnvironmentsSection from '../components/EnvironmentsSection';
+import DependenciesSection from '../components/DependenciesSection';
 import ProjectHeader from '../components/ProjectHeader';
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog';
 import ProjectInfoTab from '../components/ProjectInfoTab';
+import ProjectConfigDialog from '../components/ProjectConfigDialog';
 
-const projectSchema = z.object({
-  title: z.string().min(1, 'Le titre est requis'),
-  description: z.string().optional(),
-  type: z.enum(['webapp', 'mobile', 'autre'] as const),
-  status: z.enum(['à faire', 'en cours', 'terminé', 'en pause'] as const),
-  start_date: z.string().optional().nullable(),
-  deadline: z.string().optional().nullable(),
-  stack: z.string().optional(),
-  github_url: z.string().url('URL GitHub invalide').optional().nullable(),
-  deploy_url: z.string().url('URL de déploiement invalide').optional().nullable(),
-  database_provider: z.enum(['supabase', 'firebase', 'mongodb', 'mysql', 'postgresql'] as const).optional().nullable(),
-  database_name: z.string().optional().nullable(),
-  supabase_url: z.string().url('URL Supabase invalide').optional().nullable(),
-  local_path: z.string().optional().nullable(),
-  ai_provider: z.string().optional().nullable(),
-  ai_model: z.string().optional().nullable(),
-  ai_api_key: z.string().optional().nullable(),
-});
+type TabType = 'info' | 'tasks' | 'notes' | 'versions' | 'docs' | 'envs' | 'deps';
 
-type ProjectFormData = z.infer<typeof projectSchema>;
-type TabType = 'info' | 'notes' | 'versions';
+interface TabConfig {
+  id: TabType;
+  label: string;
+  icon: typeof Info;
+  badge?: boolean;
+}
+
+const tabs: TabConfig[] = [
+  { id: 'info', label: 'Informations', icon: Info },
+  { id: 'tasks', label: 'Tâches', icon: ListTodo, badge: true },
+  { id: 'notes', label: 'Notes', icon: StickyNote },
+  { id: 'versions', label: 'Versions', icon: FileArchive },
+  { id: 'docs', label: 'Documentation', icon: Book },
+  { id: 'envs', label: 'Environnements', icon: Settings2 },
+  { id: 'deps', label: 'Dépendances', icon: Package },
+];
 
 export default function ProjectDetails() {
   const { id } = useParams();
@@ -42,27 +41,15 @@ export default function ProjectDetails() {
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
+  const [showConfigDialog, setShowConfigDialog] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('info');
-
-  const { register, handleSubmit, formState: { errors }, setValue, watch, reset } = useForm<ProjectFormData>({
-    resolver: zodResolver(projectSchema),
-  });
 
   React.useEffect(() => {
     if (id) {
       fetchProjectData();
     }
   }, [id]);
-
-  React.useEffect(() => {
-    if (project && !isEditing) {
-      Object.entries(project).forEach(([key, value]) => {
-        setValue(key as keyof ProjectFormData, value);
-      });
-    }
-  }, [project, isEditing, setValue]);
 
   async function fetchProjectData() {
     try {
@@ -101,7 +88,7 @@ export default function ProjectDetails() {
     }
   }
 
-  const onSubmit = async (data: ProjectFormData) => {
+  const updateProject = async (data: Partial<Project>) => {
     if (!project?.id) return;
 
     try {
@@ -112,7 +99,7 @@ export default function ProjectDetails() {
 
       if (error) throw error;
 
-      setIsEditing(false);
+      setShowConfigDialog(false);
       fetchProjectData();
       toast.success('Projet mis à jour');
     } catch (error) {
@@ -131,6 +118,36 @@ export default function ProjectDetails() {
     }).catch(() => {
       toast.error('Erreur lors de la copie');
     });
+  };
+
+  const renderTabContent = () => {
+    if (!project) return null;
+
+    switch (activeTab) {
+      case 'info':
+        return (
+          <ProjectInfoTab
+            project={project}
+            showApiKey={showApiKey}
+            onToggleApiKey={() => setShowApiKey(!showApiKey)}
+            onCopy={copyToClipboard}
+          />
+        );
+      case 'tasks':
+        return <TasksSection projectId={project.id} />;
+      case 'notes':
+        return <NotesSection projectId={project.id} />;
+      case 'versions':
+        return <VersionsSection projectId={project.id} />;
+      case 'docs':
+        return <DocumentationSection projectId={project.id} />;
+      case 'envs':
+        return <EnvironmentsSection projectId={project.id} />;
+      case 'deps':
+        return <DependenciesSection projectId={project.id} />;
+      default:
+        return null;
+    }
   };
 
   if (loading) {
@@ -170,10 +187,10 @@ export default function ProjectDetails() {
             Retour au tableau de bord
           </button>
           <button
-            onClick={() => setIsEditing(true)}
+            onClick={() => setShowConfigDialog(true)}
             className="btn-secondary flex items-center gap-2"
           >
-            <Save className="w-4 h-4" />
+            <Settings className="w-4 h-4" />
             Configurer
           </button>
         </div>
@@ -192,99 +209,40 @@ export default function ProjectDetails() {
             <p className="text-white/80 mb-6">{project.description}</p>
           )}
 
-          <div className="border-b border-white/10 mb-6">
-            <div className="flex gap-4">
+          <div className="tabs">
+            {tabs.map((tab) => (
               <button
-                onClick={() => setActiveTab('info')}
-                className={`pb-2 px-1 flex items-center gap-2 transition-colors relative ${
-                  activeTab === 'info'
-                    ? 'text-primary'
-                    : 'text-white/60 hover:text-white'
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`tab ${
+                  activeTab === tab.id ? 'tab-active' : 'tab-inactive'
                 }`}
               >
-                <Info className="w-4 h-4" />
-                Informations
-                {activeTab === 'info' && (
+                <tab.icon className="w-4 h-4" />
+                {tab.label}
+                {tab.badge && (
                   <motion.div
-                    layoutId="activeTab"
-                    className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    className="tab-badge"
                   />
                 )}
               </button>
-              <button
-                onClick={() => setActiveTab('notes')}
-                className={`pb-2 px-1 flex items-center gap-2 transition-colors relative ${
-                  activeTab === 'notes'
-                    ? 'text-primary'
-                    : 'text-white/60 hover:text-white'
-                }`}
-              >
-                <StickyNote className="w-4 h-4" />
-                Notes
-                {activeTab === 'notes' && (
-                  <motion.div
-                    layoutId="activeTab"
-                    className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"
-                  />
-                )}
-              </button>
-              <button
-                onClick={() => setActiveTab('versions')}
-                className={`pb-2 px-1 flex items-center gap-2 transition-colors relative ${
-                  activeTab === 'versions'
-                    ? 'text-primary'
-                    : 'text-white/60 hover:text-white'
-                }`}
-              >
-                <FileArchive className="w-4 h-4" />
-                Versions
-                {activeTab === 'versions' && (
-                  <motion.div
-                    layoutId="activeTab"
-                    className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"
-                  />
-                )}
-              </button>
-            </div>
+            ))}
           </div>
 
-          <AnimatePresence mode="wait">
-            {activeTab === 'info' && (
+          <div className="tab-content">
+            <AnimatePresence mode="wait">
               <motion.div
-                key="info"
+                key={activeTab}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -20 }}
               >
-                <ProjectInfoTab
-                  project={project}
-                  showApiKey={showApiKey}
-                  onToggleApiKey={() => setShowApiKey(!showApiKey)}
-                  onCopy={copyToClipboard}
-                />
+                {renderTabContent()}
               </motion.div>
-            )}
-            {activeTab === 'notes' && (
-              <motion.div
-                key="notes"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-              >
-                <NotesSection projectId={project.id} />
-              </motion.div>
-            )}
-            {activeTab === 'versions' && (
-              <motion.div
-                key="versions"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-              >
-                <VersionsSection projectId={project.id} />
-              </motion.div>
-            )}
-          </AnimatePresence>
+            </AnimatePresence>
+          </div>
         </motion.div>
       </div>
 
@@ -293,6 +251,13 @@ export default function ProjectDetails() {
           <DeleteConfirmDialog
             onConfirm={deleteProject}
             onCancel={() => setShowDeleteConfirm(false)}
+          />
+        )}
+        {showConfigDialog && project && (
+          <ProjectConfigDialog
+            project={project}
+            onClose={() => setShowConfigDialog(false)}
+            onSave={updateProject}
           />
         )}
       </AnimatePresence>
