@@ -38,6 +38,48 @@ interface PackageJson {
   devDependencies?: Record<string, string>;
 }
 
+async function fetchPackageJson(owner: string, repo: string) {
+  try {
+    const headers: HeadersInit = {
+      'Accept': 'application/vnd.github.v3.raw',
+    };
+
+    const githubToken = import.meta.env.VITE_GITHUB_TOKEN;
+    if (githubToken) {
+      headers.Authorization = `Bearer ${githubToken}`;
+    }
+
+    // First try main branch
+    let response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/package.json`,
+      { headers }
+    );
+
+    // If main fails, try master branch
+    if (!response.ok && response.status === 404) {
+      response = await fetch(
+        `https://raw.githubusercontent.com/${owner}/${repo}/master/package.json`,
+        { headers }
+      );
+    }
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('package.json introuvable. Vérifiez que le fichier existe dans le repository.');
+      }
+      if (response.status === 403) {
+        throw new Error('Limite d\'API GitHub dépassée ou token invalide. Configurez un token GitHub valide.');
+      }
+      throw new Error(`Erreur API GitHub: ${response.statusText}`);
+    }
+
+    return response.json();
+  } catch (error) {
+    console.error('Error fetching package.json:', error);
+    throw error;
+  }
+}
+
 export default function DependenciesSection({ projectId }: DependenciesSectionProps) {
   const [dependencies, setDependencies] = useState<Dependency[]>([]);
   const [loading, setLoading] = useState(true);
@@ -94,26 +136,30 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
 
       if (projectError) throw projectError;
       if (!project?.github_url) {
-        toast.error('URL GitHub non configurée');
-        return;
+        throw new Error('URL GitHub non configurée');
       }
 
-      // Parse GitHub URL to get owner and repo
-      const match = project.github_url.match(/github\.com\/([^/]+)\/([^/]+)/);
+      // Validate and parse GitHub URL
+      const githubUrlPattern = /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/;
+      const match = project.github_url.match(githubUrlPattern);
+      
       if (!match) {
-        toast.error('URL GitHub invalide');
-        return;
+        throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
       }
 
       const [, owner, repo] = match;
 
-      // Fetch package.json from GitHub
-      const response = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/main/package.json`);
-      if (!response.ok) {
-        throw new Error('Impossible de récupérer le package.json');
+      // Additional validation for owner and repo
+      if (!owner || !repo) {
+        throw new Error('Impossible d\'extraire le propriétaire et le nom du repository de l\'URL GitHub');
       }
 
-      const packageJson: PackageJson = await response.json();
+      if (owner.length < 1 || repo.length < 1) {
+        throw new Error('Le propriétaire et le nom du repository ne peuvent pas être vides');
+      }
+
+      // Fetch package.json from GitHub
+      const packageJson = await fetchPackageJson(owner, repo);
 
       // Prepare dependencies to sync
       const depsToSync = [];
@@ -167,7 +213,11 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
       fetchDependencies();
     } catch (error) {
       console.error('Error syncing with GitHub:', error);
-      toast.error('Erreur lors de la synchronisation');
+      if (error instanceof Error) {
+        toast.error(error.message);
+      } else {
+        toast.error('Erreur lors de la synchronisation');
+      }
     } finally {
       setSyncing(false);
     }

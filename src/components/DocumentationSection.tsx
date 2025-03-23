@@ -6,6 +6,8 @@ import { z } from 'zod';
 import { Book, Plus, Save, X, Pencil, Trash2, ChevronDown, ChevronUp, Loader2, RefreshCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { generateDocumentation } from '../lib/openai';
+import { fetchGitHubContent, fetchFileContent } from '../lib/github';
+import { useAuth } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -40,69 +42,8 @@ const categories = [
   { value: 'configuration', label: 'Configuration' },
 ];
 
-async function fetchGitHubContent(owner: string, repo: string, path: string = '') {
-  try {
-    const headers: HeadersInit = {
-      'Accept': 'application/vnd.github.v3+json',
-    };
-
-    const githubToken = import.meta.env.VITE_GITHUB_TOKEN;
-    if (githubToken) {
-      headers.Authorization = `Bearer ${githubToken}`;
-    }
-
-    const response = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
-      { headers }
-    );
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        throw new Error('Repository ou chemin introuvable. Vérifiez l\'URL GitHub du projet.');
-      }
-      if (response.status === 403) {
-        throw new Error('Limite d\'API GitHub dépassée ou token invalide. Configurez un token GitHub valide.');
-      }
-      throw new Error(`Erreur API GitHub: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    if (Array.isArray(data)) {
-      return data;
-    } else {
-      throw new Error('Format de réponse GitHub invalide');
-    }
-  } catch (error) {
-    console.error('Error fetching GitHub content:', error);
-    throw error;
-  }
-}
-
-async function fetchFileContent(url: string) {
-  try {
-    const headers: HeadersInit = {
-      'Accept': 'application/vnd.github.v3.raw',
-    };
-
-    const githubToken = import.meta.env.VITE_GITHUB_TOKEN;
-    if (githubToken) {
-      headers.Authorization = `Bearer ${githubToken}`;
-    }
-
-    const response = await fetch(url, { headers });
-    
-    if (!response.ok) {
-      throw new Error(`Erreur lors de la récupération du fichier: ${response.statusText}`);
-    }
-
-    return response.text();
-  } catch (error) {
-    console.error('Error fetching file content:', error);
-    throw error;
-  }
-}
-
 export default function DocumentationSection({ projectId }: DocumentationSectionProps) {
+  const { session } = useAuth();
   const [docs, setDocs] = useState<Documentation[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNewDocForm, setShowNewDocForm] = useState(false);
@@ -141,6 +82,10 @@ export default function DocumentationSection({ projectId }: DocumentationSection
 
   const onSubmit = async (data: DocFormData) => {
     try {
+      if (!session?.user) {
+        throw new Error('Utilisateur non authentifié');
+      }
+
       if (editingDocId) {
         const { error } = await supabase
           .from('documentation')
@@ -155,7 +100,7 @@ export default function DocumentationSection({ projectId }: DocumentationSection
           .insert([{
             project_id: projectId,
             ...data,
-            user_id: (await supabase.auth.getUser()).data.user?.id,
+            user_id: session.user.id,
           }]);
 
         if (error) throw error;
@@ -212,8 +157,7 @@ export default function DocumentationSection({ projectId }: DocumentationSection
     try {
       setSyncing(true);
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      if (!session?.user) {
         throw new Error('Utilisateur non authentifié');
       }
 
@@ -231,7 +175,7 @@ export default function DocumentationSection({ projectId }: DocumentationSection
       // Validate and parse GitHub URL
       const githubUrlPattern = /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/;
       const match = project.github_url.match(githubUrlPattern);
-
+      
       if (!match) {
         throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
       }
@@ -250,21 +194,12 @@ export default function DocumentationSection({ projectId }: DocumentationSection
       // Fetch repository contents
       const contents = await fetchGitHubContent(owner, repo);
       
-      const relevantFiles = contents.filter((file: any) => {
-        const ext = file.name.split('.').pop()?.toLowerCase();
-        return ['md', 'ts', 'tsx', 'js', 'jsx'].includes(ext || '') && 
-               !file.name.includes('.test.') &&
-               !file.name.includes('.spec.') &&
-               !file.name.includes('.min.') &&
-               file.size < 100000;
-      });
-
-      if (relevantFiles.length === 0) {
+      if (!contents || contents.length === 0) {
         throw new Error('Aucun fichier pertinent trouvé pour la documentation');
       }
 
       const files = await Promise.all(
-        relevantFiles.map(async (file: any) => {
+        contents.map(async (file: any) => {
           try {
             const content = await fetchFileContent(file.download_url);
             return {
@@ -293,7 +228,7 @@ export default function DocumentationSection({ projectId }: DocumentationSection
           title: 'Documentation technique',
           content: documentation,
           category: 'technique',
-          user_id: user.id,
+          user_id: session.user.id,
         }]);
 
       if (insertError) throw insertError;
