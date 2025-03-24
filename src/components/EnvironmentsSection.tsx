@@ -3,8 +3,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Settings2, Plus, Save, X, Pencil, Trash2, ChevronDown, ChevronUp, Loader2, Copy, Eye, EyeOff } from 'lucide-react';
+import { Settings2, Plus, Save, X, Pencil, Trash2, ChevronDown, ChevronUp, Loader2, Copy, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { fetchGitHubContent, fetchFileContent } from '../lib/github';
 import toast from 'react-hot-toast';
 
 const envSchema = z.object({
@@ -43,6 +44,7 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
   const [editingEnvId, setEditingEnvId] = useState<string | null>(null);
   const [expandedEnvs, setExpandedEnvs] = useState<Set<string>>(new Set());
   const [hiddenValues, setHiddenValues] = useState<Set<string>>(new Set());
+  const [syncing, setSyncing] = useState(false);
 
   const { register, handleSubmit, reset, watch, setValue, formState: { errors } } = useForm<EnvFormData>({
     resolver: zodResolver(envSchema),
@@ -74,6 +76,162 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
       setLoading(false);
     }
   }
+
+  const syncWithGitHub = async () => {
+    try {
+      setSyncing(true);
+
+      // Get user ID first
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        throw new Error('User not authenticated');
+      }
+
+      // Fetch project details to get GitHub URL
+      const { data: project, error: projectError } = await supabase
+        .from('projects')
+        .select('github_url')
+        .eq('id', projectId)
+        .single();
+
+      if (projectError) throw projectError;
+      if (!project?.github_url) {
+        throw new Error('URL GitHub non configurée. Ajoutez l\'URL GitHub dans les paramètres du projet.');
+      }
+
+      // Validate and parse GitHub URL
+      const githubUrlPattern = /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/;
+      const match = project.github_url.match(githubUrlPattern);
+      
+      if (!match) {
+        throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
+      }
+
+      const [, owner, repo] = match;
+
+      // Additional validation for owner and repo
+      if (!owner || !repo) {
+        throw new Error('Impossible d\'extraire le propriétaire et le nom du repository de l\'URL GitHub');
+      }
+
+      if (owner.length < 1 || repo.length < 1) {
+        throw new Error('Le propriétaire et le nom du repository ne peuvent pas être vides');
+      }
+
+      // Get repository contents first
+      const contents = await fetchGitHubContent(owner, repo);
+      const envFiles = contents.filter(file => 
+        file.name.startsWith('.env') || 
+        file.name === 'package.json'
+      );
+
+      if (envFiles.length === 0) {
+        throw new Error('Aucun fichier de configuration d\'environnement trouvé dans le repository.');
+      }
+
+      // Fetch content of each file
+      const files = await Promise.all(
+        envFiles.map(async (file) => {
+          try {
+            const content = await fetchFileContent(file.download_url);
+            return {
+              name: file.name,
+              content,
+            };
+          } catch (error) {
+            console.error(`Error fetching ${file.name}:`, error);
+            return null;
+          }
+        })
+      );
+
+      const validFiles = files.filter((f): f is { name: string; content: string } => f !== null);
+
+      if (validFiles.length === 0) {
+        throw new Error('Impossible de récupérer le contenu des fichiers de configuration.');
+      }
+
+      // Extract environment variables
+      const variables: Record<string, Record<string, string>> = {
+        development: {},
+        production: {},
+      };
+
+      // Parse .env files
+      const parseEnvFile = (content: string) => {
+        const vars: Record<string, string> = {};
+        content.split('\n').forEach(line => {
+          line = line.trim();
+          if (line && !line.startsWith('#')) {
+            const match = line.match(/^([^=]+)=(.*)$/);
+            if (match) {
+              const [, key, value] = match;
+              vars[key.trim()] = value.trim().replace(/["']/g, '');
+            }
+          }
+        });
+        return vars;
+      };
+
+      // Process each file
+      validFiles.forEach(file => {
+        if (file.name === 'package.json') {
+          try {
+            const packageJson = JSON.parse(file.content);
+            if (packageJson.scripts) {
+              Object.values(packageJson.scripts).forEach((script: string) => {
+                const envVars = script.match(/\$\{?([A-Z_][A-Z0-9_]*)\}?/g);
+                if (envVars) {
+                  envVars.forEach(variable => {
+                    const key = variable.replace(/[\$\{\}]/g, '');
+                    if (!variables.development[key]) {
+                      variables.development[key] = '';
+                      variables.production[key] = '';
+                    }
+                  });
+                }
+              });
+            }
+          } catch (error) {
+            console.error('Error parsing package.json:', error);
+          }
+        } else {
+          const vars = parseEnvFile(file.content);
+          const isProduction = file.name.includes('prod');
+          const targetEnv = isProduction ? variables.production : variables.development;
+          Object.assign(targetEnv, vars);
+        }
+      });
+
+      // Create environments
+      for (const [envName, vars] of Object.entries(variables)) {
+        if (Object.keys(vars).length > 0) {
+          const { error: insertError } = await supabase
+            .from('environments')
+            .insert({
+              project_id: projectId,
+              name: envName,
+              variables: vars,
+              user_id: user.id,
+            });
+
+          if (insertError) throw insertError;
+        }
+      }
+
+      toast.success('Environnements synchronisés avec GitHub');
+      fetchEnvironments();
+    } catch (error) {
+      console.error('Error syncing with GitHub:', error);
+      if (error instanceof Error) {
+        toast.error(error.message);
+      } else {
+        toast.error('Erreur lors de la synchronisation');
+      }
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const onSubmit = async (data: EnvFormData) => {
     try {
@@ -193,15 +351,25 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Environnements</h3>
-        {!showNewEnvForm && (
+        <div className="flex gap-2">
           <button
-            onClick={() => setShowNewEnvForm(true)}
+            onClick={syncWithGitHub}
+            disabled={syncing}
             className="btn-secondary flex items-center gap-2"
           >
-            <Plus className="w-4 h-4" />
-            Nouvel environnement
+            <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+            Synchroniser avec GitHub
           </button>
-        )}
+          {!showNewEnvForm && (
+            <button
+              onClick={() => setShowNewEnvForm(true)}
+              className="btn-secondary flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              Nouvel environnement
+            </button>
+          )}
+        </div>
       </div>
 
       <AnimatePresence mode="popLayout">

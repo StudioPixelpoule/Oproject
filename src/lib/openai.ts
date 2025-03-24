@@ -2,17 +2,18 @@ import OpenAI from 'openai';
 
 const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
 
-if (!apiKey) {
-  throw new Error('VITE_OPENAI_API_KEY environment variable is missing');
-}
-
-export const openai = new OpenAI({
+// Create OpenAI client only if API key is available
+export const openai = apiKey ? new OpenAI({
   apiKey,
   dangerouslyAllowBrowser: true,
-});
+}) : null;
 
 export async function generateDocumentation(files: { name: string; content: string }[]) {
   try {
+    if (!openai) {
+      throw new Error('OpenAI API key not configured. Please add VITE_OPENAI_API_KEY to your environment variables.');
+    }
+
     // First, prepare a structured summary of the files
     const filesSummary = files.map(f => ({
       name: f.name,
@@ -20,23 +21,25 @@ export async function generateDocumentation(files: { name: string; content: stri
       content: f.content.length > 10000 ? f.content.slice(0, 10000) + '...' : f.content
     }));
 
-    const response = await openai.chat.completions.create({
+    // Generate technical documentation
+    const technicalResponse = await openai.chat.completions.create({
       model: "gpt-4-turbo-preview",
       messages: [
         {
           role: "system",
-          content: `You are a technical documentation expert. Generate comprehensive documentation in markdown format following these guidelines:
+          content: `Vous êtes un expert en documentation technique. Générez une documentation complète en français au format markdown en suivant ces directives :
 
-1. Start with a high-level project overview
-2. Document the architecture and key components
-3. Explain important implementation details
-4. Include code examples for key features
-5. Use clear headings and sections
-6. Focus on maintainability and clarity`
+1. Commencez par une vue d'ensemble du projet
+2. Documentez l'architecture et les composants clés
+3. Expliquez les détails d'implémentation importants
+4. Incluez des exemples de code pour les fonctionnalités principales
+5. Utilisez des titres et sections clairs
+6. Mettez l'accent sur la maintenabilité et la clarté
+7. Utilisez un langage technique précis mais accessible`
         },
         {
           role: "user",
-          content: `Please analyze these project files and generate documentation:\n\n${filesSummary.map(f => 
+          content: `Analysez ces fichiers de projet et générez une documentation technique en français :\n\n${filesSummary.map(f => 
             `### ${f.name}\n\`\`\`\n${f.content}\n\`\`\``
           ).join('\n\n')}`
         }
@@ -45,13 +48,47 @@ export async function generateDocumentation(files: { name: string; content: stri
       max_tokens: 4000,
     });
 
-    const documentation = response.choices[0].message.content || '';
+    // Generate user manual
+    const userManualResponse = await openai.chat.completions.create({
+      model: "gpt-4-turbo-preview",
+      messages: [
+        {
+          role: "system",
+          content: `Vous êtes un expert en documentation utilisateur. Créez un manuel d'utilisation complet en français au format markdown en suivant ces directives :
+
+1. Introduction claire du produit et de son objectif
+2. Guide de démarrage rapide
+3. Description détaillée de toutes les fonctionnalités
+4. Instructions étape par étape pour chaque action possible
+5. Captures d'écran et exemples concrets (à décrire textuellement)
+6. FAQ et résolution des problèmes courants
+7. Utilisez un langage simple et accessible
+8. Évitez le jargon technique sauf si nécessaire`
+        },
+        {
+          role: "user",
+          content: `Analysez ces fichiers de projet et créez un manuel d'utilisation complet en français :\n\n${filesSummary.map(f => 
+            `### ${f.name}\n\`\`\`\n${f.content}\n\`\`\``
+          ).join('\n\n')}`
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 4000,
+    });
+
+    const technicalDoc = technicalResponse.choices[0].message.content || '';
+    const userManual = userManualResponse.choices[0].message.content || '';
     
-    // Add metadata and formatting
+    // Combine both documents
     return `# Documentation Technique
 > Générée automatiquement le ${new Date().toLocaleDateString('fr-FR')}
 
-${documentation}
+${technicalDoc}
+
+# Manuel d'Utilisation
+> Généré automatiquement le ${new Date().toLocaleDateString('fr-FR')}
+
+${userManual}
 
 ## Fichiers Analysés
 ${files.map(f => `- \`${f.name}\``).join('\n')}

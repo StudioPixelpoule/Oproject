@@ -3,9 +3,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Package, Plus, Save, X, Pencil, Trash2, ChevronDown, ChevronUp, Loader2, ExternalLink, RefreshCw } from 'lucide-react';
+import { Package, Plus, Save, X, Pencil, Trash2, ChevronDown, ChevronUp, Loader2, ExternalLink, RefreshCw, AlertCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { fetchGitHubContent, fetchFileContent } from '../lib/github';
 import toast from 'react-hot-toast';
+import * as semver from 'semver';
 
 const dependencySchema = z.object({
   name: z.string().min(1, 'Le nom est requis'),
@@ -27,63 +29,24 @@ interface Dependency {
   homepage: string | null;
   created_at: string;
   user_id: string;
+  latestVersion?: string;
+  hasUpdate?: boolean;
+}
+
+interface DependencyWithVersion extends Dependency {
+  latestVersion?: string;
+  hasUpdate?: boolean;
 }
 
 interface DependenciesSectionProps {
   projectId: string;
 }
 
-interface PackageJson {
-  dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-}
-
-async function fetchPackageJson(owner: string, repo: string) {
-  try {
-    const headers: HeadersInit = {
-      'Accept': 'application/vnd.github.v3.raw',
-    };
-
-    const githubToken = import.meta.env.VITE_GITHUB_TOKEN;
-    if (githubToken) {
-      headers.Authorization = `Bearer ${githubToken}`;
-    }
-
-    // First try main branch
-    let response = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/package.json`,
-      { headers }
-    );
-
-    // If main fails, try master branch
-    if (!response.ok && response.status === 404) {
-      response = await fetch(
-        `https://raw.githubusercontent.com/${owner}/${repo}/master/package.json`,
-        { headers }
-      );
-    }
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        throw new Error('package.json introuvable. Vérifiez que le fichier existe dans le repository.');
-      }
-      if (response.status === 403) {
-        throw new Error('Limite d\'API GitHub dépassée ou token invalide. Configurez un token GitHub valide.');
-      }
-      throw new Error(`Erreur API GitHub: ${response.statusText}`);
-    }
-
-    return response.json();
-  } catch (error) {
-    console.error('Error fetching package.json:', error);
-    throw error;
-  }
-}
-
 export default function DependenciesSection({ projectId }: DependenciesSectionProps) {
-  const [dependencies, setDependencies] = useState<Dependency[]>([]);
+  const [dependencies, setDependencies] = useState<DependencyWithVersion[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [showNewDependencyForm, setShowNewDependencyForm] = useState(false);
   const [editingDependencyId, setEditingDependencyId] = useState<string | null>(null);
   const [expandedDeps, setExpandedDeps] = useState<Set<string>>(new Set());
@@ -117,115 +80,55 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
     }
   }
 
-  const syncWithGitHub = async () => {
+  const checkForUpdates = async () => {
     try {
-      setSyncing(true);
+      setCheckingUpdates(true);
+      const updatedDeps = await Promise.all(
+        dependencies.map(async (dep) => {
+          try {
+            const response = await fetch(`https://registry.npmjs.org/${dep.name}`);
+            if (!response.ok) {
+              throw new Error(`Error fetching package info: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            const latestVersion = data['dist-tags']?.latest;
+            
+            if (!latestVersion) {
+              return dep;
+            }
 
-      // Get user ID first
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        throw new Error('User not authenticated');
-      }
+            const currentVersion = semver.clean(dep.version.replace(/[\^~]/, '')) || dep.version;
+            const cleanLatestVersion = semver.clean(latestVersion) || latestVersion;
 
-      // Fetch project details to get GitHub URL
-      const { data: project, error: projectError } = await supabase
-        .from('projects')
-        .select('github_url')
-        .eq('id', projectId)
-        .single();
+            const hasUpdate = semver.valid(currentVersion) && 
+                            semver.valid(cleanLatestVersion) && 
+                            semver.gt(cleanLatestVersion, currentVersion);
 
-      if (projectError) throw projectError;
-      if (!project?.github_url) {
-        throw new Error('URL GitHub non configurée');
-      }
+            return {
+              ...dep,
+              latestVersion: cleanLatestVersion,
+              hasUpdate,
+            };
+          } catch (error) {
+            console.error(`Error checking updates for ${dep.name}:`, error);
+            return dep;
+          }
+        })
+      );
 
-      // Validate and parse GitHub URL
-      const githubUrlPattern = /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/;
-      const match = project.github_url.match(githubUrlPattern);
-      
-      if (!match) {
-        throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
-      }
-
-      const [, owner, repo] = match;
-
-      // Additional validation for owner and repo
-      if (!owner || !repo) {
-        throw new Error('Impossible d\'extraire le propriétaire et le nom du repository de l\'URL GitHub');
-      }
-
-      if (owner.length < 1 || repo.length < 1) {
-        throw new Error('Le propriétaire et le nom du repository ne peuvent pas être vides');
-      }
-
-      // Fetch package.json from GitHub
-      const packageJson = await fetchPackageJson(owner, repo);
-
-      // Prepare dependencies to sync
-      const depsToSync = [];
-
-      // Add production dependencies
-      if (packageJson.dependencies) {
-        for (const [name, version] of Object.entries(packageJson.dependencies)) {
-          depsToSync.push({
-            project_id: projectId,
-            name,
-            version,
-            type: 'production' as const,
-            homepage: `https://www.npmjs.com/package/${name}`,
-            user_id: user.id,
-          });
-        }
-      }
-
-      // Add development dependencies
-      if (packageJson.devDependencies) {
-        for (const [name, version] of Object.entries(packageJson.devDependencies)) {
-          depsToSync.push({
-            project_id: projectId,
-            name,
-            version,
-            type: 'development' as const,
-            homepage: `https://www.npmjs.com/package/${name}`,
-            user_id: user.id,
-          });
-        }
-      }
-
-      // Delete existing dependencies
-      const { error: deleteError } = await supabase
-        .from('dependencies')
-        .delete()
-        .eq('project_id', projectId);
-
-      if (deleteError) throw deleteError;
-
-      // Insert new dependencies
-      if (depsToSync.length > 0) {
-        const { error: insertError } = await supabase
-          .from('dependencies')
-          .insert(depsToSync);
-
-        if (insertError) throw insertError;
-      }
-
-      toast.success('Dépendances synchronisées avec GitHub');
-      fetchDependencies();
+      setDependencies(updatedDeps);
+      toast.success('Versions vérifiées avec succès');
     } catch (error) {
-      console.error('Error syncing with GitHub:', error);
-      if (error instanceof Error) {
-        toast.error(error.message);
-      } else {
-        toast.error('Erreur lors de la synchronisation');
-      }
+      console.error('Error checking for updates:', error);
+      toast.error('Erreur lors de la vérification des mises à jour');
     } finally {
-      setSyncing(false);
+      setCheckingUpdates(false);
     }
   };
 
   const onSubmit = async (data: DependencyFormData) => {
     try {
-      // Get user ID first
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         throw new Error('User not authenticated');
@@ -300,10 +203,114 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
     setExpandedDeps(newExpanded);
   };
 
+  const syncWithGitHub = async () => {
+    try {
+      setSyncing(true);
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        throw new Error('User not authenticated');
+      }
+
+      const { data: project, error: projectError } = await supabase
+        .from('projects')
+        .select('github_url')
+        .eq('id', projectId)
+        .single();
+
+      if (projectError) throw projectError;
+      if (!project?.github_url) {
+        throw new Error('URL GitHub non configurée. Ajoutez l\'URL GitHub dans les paramètres du projet.');
+      }
+
+      const githubUrlPattern = /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/;
+      const match = project.github_url.match(githubUrlPattern);
+      
+      if (!match) {
+        throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
+      }
+
+      const [, owner, repo] = match;
+
+      if (!owner || !repo) {
+        throw new Error('Impossible d\'extraire le propriétaire et le nom du repository de l\'URL GitHub');
+      }
+
+      if (owner.length < 1 || repo.length < 1) {
+        throw new Error('Le propriétaire et le nom du repository ne peuvent pas être vides');
+      }
+
+      const contents = await fetchGitHubContent(owner, repo);
+      const packageJsonFile = contents.find(file => file.name === 'package.json');
+
+      if (!packageJsonFile) {
+        throw new Error('package.json introuvable dans le repository.');
+      }
+
+      const packageJsonContent = await fetchFileContent(packageJsonFile.download_url);
+      const packageJson = JSON.parse(packageJsonContent);
+
+      const depsToSync = [];
+
+      if (packageJson.dependencies) {
+        for (const [name, version] of Object.entries(packageJson.dependencies)) {
+          depsToSync.push({
+            project_id: projectId,
+            name,
+            version: version as string,
+            type: 'production',
+            homepage: `https://www.npmjs.com/package/${name}`,
+            user_id: user.id,
+          });
+        }
+      }
+
+      if (packageJson.devDependencies) {
+        for (const [name, version] of Object.entries(packageJson.devDependencies)) {
+          depsToSync.push({
+            project_id: projectId,
+            name,
+            version: version as string,
+            type: 'development',
+            homepage: `https://www.npmjs.com/package/${name}`,
+            user_id: user.id,
+          });
+        }
+      }
+
+      const { error: deleteError } = await supabase
+        .from('dependencies')
+        .delete()
+        .eq('project_id', projectId);
+
+      if (deleteError) throw deleteError;
+
+      if (depsToSync.length > 0) {
+        const { error: insertError } = await supabase
+          .from('dependencies')
+          .insert(depsToSync);
+
+        if (insertError) throw insertError;
+      }
+
+      toast.success('Dépendances synchronisées avec GitHub');
+      fetchDependencies();
+    } catch (error) {
+      console.error('Error syncing with GitHub:', error);
+      if (error instanceof Error) {
+        toast.error(error.message);
+      } else {
+        toast.error('Erreur lors de la synchronisation');
+      }
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8">
-        <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        <Loader2 className="w-6 h-6 animate-spin text-[#F6A469]" />
       </div>
     );
   }
@@ -312,24 +319,37 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Dépendances</h3>
-        <div className="flex gap-2">
-          <button
-            onClick={syncWithGitHub}
-            disabled={syncing}
-            className="btn-secondary flex items-center gap-2"
+        <div className="flex items-center gap-2">
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={checkForUpdates}
+            className="btn-secondary h-9 px-3 text-sm"
+            disabled={checkingUpdates}
           >
-            <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 mr-1.5 ${checkingUpdates ? 'animate-spin' : ''}`} />
+            Vérifier les mises à jour
+          </motion.button>
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={() => setShowNewDependencyForm(true)}
+            className="btn-secondary h-9 px-3 text-sm"
+            disabled={showNewDependencyForm}
+          >
+            <Plus className="w-4 h-4 mr-1.5" />
+            Nouvelle
+          </motion.button>
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={syncWithGitHub}
+            className="btn-secondary h-9 px-3 text-sm"
+            disabled={syncing}
+          >
+            <RefreshCw className={`w-4 h-4 mr-1.5 ${syncing ? 'animate-spin' : ''}`} />
             Synchroniser avec GitHub
-          </button>
-          {!showNewDependencyForm && (
-            <button
-              onClick={() => setShowNewDependencyForm(true)}
-              className="btn-secondary flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              Nouvelle dépendance
-            </button>
-          )}
+          </motion.button>
         </div>
       </div>
 
@@ -340,7 +360,7 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
             onSubmit={handleSubmit(onSubmit)}
-            className="card bg-white/10"
+            className="card bg-white/5"
           >
             <div className="space-y-4">
               <div>
@@ -411,112 +431,128 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
             </div>
 
             <div className="flex justify-end gap-2 mt-6">
-              <button
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
                 type="button"
                 onClick={() => {
                   setShowNewDependencyForm(false);
                   setEditingDependencyId(null);
                   reset();
                 }}
-                className="btn-secondary flex items-center gap-2"
+                className="btn-secondary h-9 px-3 text-sm"
               >
-                <X className="w-4 h-4" />
+                <X className="w-4 h-4 mr-1.5" />
                 Annuler
-              </button>
-              <button type="submit" className="btn-primary flex items-center gap-2">
-                <Save className="w-4 h-4" />
+              </motion.button>
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                type="submit"
+                className="btn-primary h-9 px-3 text-sm"
+              >
+                <Save className="w-4 h-4 mr-1.5" />
                 {editingDependencyId ? 'Mettre à jour' : 'Ajouter'}
-              </button>
+              </motion.button>
             </div>
           </motion.form>
         )}
 
-        {dependencies.map((dep) => (
-          <motion.div
-            key={dep.id}
-            layout
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="card bg-white/10"
-          >
-            <div className="flex items-start justify-between">
-              <div className="flex items-start gap-4 flex-1">
-                <Package className="w-5 h-5 text-primary mt-1" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3 mb-2">
-                    <h4 className="text-lg font-semibold font-mono">{dep.name}</h4>
-                    <span className="px-2 py-1 rounded-lg bg-white/5 text-sm font-mono">
-                      {dep.version}
-                    </span>
-                    <span className={`px-2 py-1 rounded-lg text-sm ${
-                      dep.type === 'production'
-                        ? 'bg-primary/20 text-primary'
-                        : 'bg-secondary/20 text-secondary'
-                    }`}>
-                      {dep.type}
-                    </span>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {dependencies.map((dep) => (
+            <motion.div
+              key={dep.id}
+              layout
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="card bg-white/5 flex flex-col"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3 min-w-0">
+                  <Package className="w-5 h-5 text-[#F6A469] mt-1 flex-shrink-0" />
+                  <div className="min-w-0">
+                    <h4 className="text-lg font-semibold font-mono truncate">{dep.name}</h4>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      <span className="px-2 py-1 rounded-lg bg-white/5 text-sm font-mono">
+                        {dep.version}
+                      </span>
+                      {dep.hasUpdate && (
+                        <span className="px-2 py-1 rounded-lg bg-amber-500/20 text-amber-500 text-sm font-mono flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3" />
+                          {dep.latestVersion} disponible
+                        </span>
+                      )}
+                      <span className={`px-2 py-1 rounded-lg text-sm ${
+                        dep.type === 'production'
+                          ? 'bg-[#F6A469]/20 text-[#F6A469]'
+                          : 'bg-[#DA8680]/20 text-[#DA8680]'
+                      }`}>
+                        {dep.type}
+                      </span>
+                    </div>
                   </div>
-                  <p className="text-sm text-white/40">
-                    Ajoutée le {new Date(dep.created_at).toLocaleDateString('fr-FR', {
-                      day: 'numeric',
-                      month: 'long',
-                      year: 'numeric',
-                    })}
-                  </p>
+                </div>
+
+                <div className="flex gap-1.5">
+                  {dep.homepage && (
+                    <motion.a
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      href={dep.homepage}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-2 rounded-lg hover:bg-white/10 transition-colors"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                    </motion.a>
+                  )}
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => toggleExpanded(dep.id)}
+                    className="p-2 rounded-lg hover:bg-white/10 transition-colors"
+                  >
+                    {expandedDeps.has(dep.id) ? (
+                      <ChevronUp className="w-4 h-4" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4" />
+                    )}
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => startEditing(dep)}
+                    className="p-2 rounded-lg hover:bg-white/10 transition-colors"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => deleteDependency(dep.id)}
+                    className="p-2 rounded-lg hover:bg-red-500/10 text-red-500 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </motion.button>
                 </div>
               </div>
 
-              <div className="flex gap-2">
-                {dep.homepage && (
-                  <a
-                    href={dep.homepage}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn-secondary"
+              <AnimatePresence>
+                {expandedDeps.has(dep.id) && dep.description && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mt-4 pt-4 border-t border-white/10"
                   >
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
+                    <p className="text-white/80">{dep.description}</p>
+                  </motion.div>
                 )}
-                <button
-                  onClick={() => toggleExpanded(dep.id)}
-                  className="btn-secondary"
-                >
-                  {expandedDeps.has(dep.id) ? (
-                    <ChevronUp className="w-4 h-4" />
-                  ) : (
-                    <ChevronDown className="w-4 h-4" />
-                  )}
-                </button>
-                <button
-                  onClick={() => startEditing(dep)}
-                  className="btn-secondary"
-                >
-                  <Pencil className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => deleteDependency(dep.id)}
-                  className="btn-secondary bg-red-500/20 hover:bg-red-500/30 text-red-500"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            <AnimatePresence>
-              {expandedDeps.has(dep.id) && dep.description && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="mt-4 pt-4 border-t border-white/10"
-                >
-                  <p className="text-white/80">{dep.description}</p>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-        ))}
+              </AnimatePresence>
+            </motion.div>
+          ))}
+        </div>
 
         {dependencies.length === 0 && !showNewDependencyForm && (
           <motion.div

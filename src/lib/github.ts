@@ -1,3 +1,5 @@
+import OpenAI from 'openai';
+
 export async function fetchGitHubContent(owner: string, repo: string, path: string = '') {
   try {
     const headers: HeadersInit = {
@@ -5,9 +7,11 @@ export async function fetchGitHubContent(owner: string, repo: string, path: stri
     };
 
     const githubToken = import.meta.env.VITE_GITHUB_TOKEN;
-    if (githubToken) {
-      headers.Authorization = `Bearer ${githubToken}`;
+    if (!githubToken) {
+      throw new Error('Token GitHub non configuré. Ajoutez VITE_GITHUB_TOKEN à vos variables d\'environnement.');
     }
+
+    headers.Authorization = `Bearer ${githubToken}`;
 
     // First, try to get the default branch
     let defaultBranch = 'main';
@@ -16,82 +20,68 @@ export async function fetchGitHubContent(owner: string, repo: string, path: stri
         `https://api.github.com/repos/${owner}/${repo}`,
         { headers }
       );
-      if (repoResponse.ok) {
-        const repoData = await repoResponse.json();
-        defaultBranch = repoData.default_branch;
+      
+      if (!repoResponse.ok) {
+        if (repoResponse.status === 404) {
+          throw new Error('Repository introuvable. Vérifiez l\'URL GitHub.');
+        }
+        if (repoResponse.status === 401) {
+          throw new Error('Token GitHub invalide. Vérifiez votre configuration.');
+        }
+        throw new Error(`Erreur GitHub: ${repoResponse.statusText}`);
       }
+
+      const repoData = await repoResponse.json();
+      defaultBranch = repoData.default_branch;
     } catch (error) {
-      console.warn('Could not fetch default branch, falling back to main/master');
+      console.error('Could not fetch default branch:', error);
+      throw error;
     }
 
-    // Try all possible branches in order
-    const branchesToTry = [defaultBranch, 'main', 'master', 'development', 'dev'];
-    let response = null;
-    let lastError = null;
+    // Get repository contents
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${defaultBranch}`,
+      { headers }
+    );
 
-    for (const branch of branchesToTry) {
-      try {
-        response = await fetch(
-          `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`,
-          { headers }
-        );
-        if (response.ok) break;
-        lastError = response;
-      } catch (error) {
-        lastError = error;
-        continue;
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('Fichiers de configuration introuvables. Vérifiez le repository.');
       }
-    }
-
-    if (!response?.ok) {
-      if (lastError?.status === 404) {
-        throw new Error(`Repository ou chemin introuvable (branches testées: ${branchesToTry.join(', ')}). Vérifiez l'URL GitHub du projet.`);
+      if (response.status === 401) {
+        throw new Error('Token GitHub invalide. Vérifiez votre configuration.');
       }
-      if (lastError?.status === 403) {
+      if (response.status === 403) {
         const rateLimitResponse = await fetch('https://api.github.com/rate_limit', { headers });
         if (rateLimitResponse.ok) {
           const rateLimit = await rateLimitResponse.json();
           if (rateLimit.resources.core.remaining === 0) {
-            throw new Error('Limite d\'API GitHub dépassée. Réessayez plus tard ou configurez un token GitHub valide.');
+            throw new Error('Limite d\'API GitHub dépassée. Réessayez plus tard.');
           }
         }
         throw new Error('Accès refusé à l\'API GitHub. Vérifiez votre token GitHub.');
       }
-      throw new Error(`Erreur API GitHub: ${lastError?.statusText || 'Erreur inconnue'}`);
+      throw new Error(`Erreur API GitHub: ${response.statusText}`);
     }
 
     const data = await response.json();
     if (Array.isArray(data)) {
-      // Filter relevant files for documentation
+      // Filter relevant files
       return data.filter(file => {
-        const ext = file.name.split('.').pop()?.toLowerCase();
-        const isRelevantFile = ['md', 'ts', 'tsx', 'js', 'jsx', 'json', 'css', 'scss', 'less'].includes(ext || '') && 
-               !file.name.startsWith('.') &&
-               !file.name.includes('.test.') &&
-               !file.name.includes('.spec.') &&
-               !file.name.includes('.min.') &&
-               !file.name.includes('.d.ts') &&
-               file.size < 500000; // 500KB max
-
-        // Special handling for common configuration files
-        const isConfigFile = [
-          'package.json',
-          'tsconfig.json',
-          'vite.config.ts',
-          'tailwind.config.js',
-          'postcss.config.js',
-          'eslint.config.js',
-          '.eslintrc.js',
-          '.eslintrc.json',
-          '.prettierrc.js',
-          '.prettierrc.json',
-        ].includes(file.name);
-
-        return isRelevantFile || isConfigFile;
+        const name = file.name.toLowerCase();
+        return (
+          name === 'package.json' ||
+          name === '.env' ||
+          name === '.env.example' ||
+          name === '.env.local' ||
+          name === '.env.development' ||
+          name === '.env.production' ||
+          name === '.env.staging'
+        );
       });
-    } else {
-      throw new Error('Format de réponse GitHub invalide');
     }
+
+    throw new Error('Format de réponse GitHub invalide');
   } catch (error) {
     console.error('Error fetching GitHub content:', error);
     throw error;
@@ -105,70 +95,25 @@ export async function fetchFileContent(url: string) {
     };
 
     const githubToken = import.meta.env.VITE_GITHUB_TOKEN;
-    if (githubToken) {
-      headers.Authorization = `Bearer ${githubToken}`;
+    if (!githubToken) {
+      throw new Error('Token GitHub non configuré. Ajoutez VITE_GITHUB_TOKEN à vos variables d\'environnement.');
     }
 
-    // Try different URL formats and methods
-    const urlsToTry = [
-      url, // Original URL
-      url.replace('api.github.com/repos', 'raw.githubusercontent.com').replace('/contents/', '/'), // Raw URL
-      url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/'), // Direct raw URL
-      url.replace('/contents/', '/raw/'), // Alternative raw format
-      url.replace('/contents/', '/'), // Simple path
-      url.replace('/blob/', '/raw/'), // GitHub blob to raw
-    ];
+    headers.Authorization = `Bearer ${githubToken}`;
 
-    let response = null;
-    let lastError = null;
+    const response = await fetch(url, { headers });
 
-    // Try each URL format with multiple branches
-    const branchesToTry = ['main', 'master', 'development', 'dev'];
-    
-    for (const tryUrl of urlsToTry) {
-      for (const branch of branchesToTry) {
-        try {
-          const branchUrl = tryUrl.includes('?') 
-            ? `${tryUrl}&ref=${branch}`
-            : `${tryUrl}?ref=${branch}`;
-
-          // First try HEAD to check if file exists and is accessible
-          const headResponse = await fetch(branchUrl, { 
-            method: 'HEAD',
-            headers 
-          });
-          
-          if (headResponse.ok) {
-            // If HEAD succeeds, try GET
-            response = await fetch(branchUrl, { headers });
-            if (response.ok) break;
-          }
-          
-          lastError = response || headResponse;
-        } catch (error) {
-          lastError = error;
-          continue;
-        }
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('Fichier introuvable. Vérifiez le repository.');
       }
-      
-      if (response?.ok) break;
-    }
-
-    if (!response?.ok) {
-      if (lastError?.status === 404) {
-        throw new Error('Fichier introuvable. Vérifiez que le fichier existe dans le repository.');
+      if (response.status === 401) {
+        throw new Error('Token GitHub invalide. Vérifiez votre configuration.');
       }
-      if (lastError?.status === 403) {
-        const rateLimitResponse = await fetch('https://api.github.com/rate_limit', { headers });
-        if (rateLimitResponse.ok) {
-          const rateLimit = await rateLimitResponse.json();
-          if (rateLimit.resources.core.remaining === 0) {
-            throw new Error('Limite d\'API GitHub dépassée. Réessayez plus tard ou configurez un token GitHub valide.');
-          }
-        }
+      if (response.status === 403) {
         throw new Error('Accès refusé à l\'API GitHub. Vérifiez votre token GitHub.');
       }
-      throw new Error(`Erreur lors de la récupération du fichier: ${lastError?.statusText || 'Erreur inconnue'}`);
+      throw new Error(`Erreur lors de la récupération du fichier: ${response.statusText}`);
     }
 
     const content = await response.text();

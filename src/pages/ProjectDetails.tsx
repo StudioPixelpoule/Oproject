@@ -22,17 +22,52 @@ interface TabConfig {
   id: TabType;
   label: string;
   icon: typeof Info;
-  badge?: boolean;
+  description: string;
 }
 
 const tabs: TabConfig[] = [
-  { id: 'info', label: 'Informations', icon: Info },
-  { id: 'tasks', label: 'Tâches', icon: ListTodo, badge: true },
-  { id: 'notes', label: 'Notes', icon: StickyNote },
-  { id: 'versions', label: 'Versions', icon: FileArchive },
-  { id: 'docs', label: 'Documentation', icon: Book },
-  { id: 'envs', label: 'Environnements', icon: Settings2 },
-  { id: 'deps', label: 'Dépendances', icon: Package },
+  { 
+    id: 'info', 
+    label: 'Informations', 
+    icon: Info,
+    description: 'Détails et configuration du projet'
+  },
+  { 
+    id: 'tasks', 
+    label: 'Tâches', 
+    icon: ListTodo,
+    description: 'Gestion des tâches et suivi'
+  },
+  { 
+    id: 'notes', 
+    label: 'Notes', 
+    icon: StickyNote,
+    description: 'Notes et commentaires'
+  },
+  { 
+    id: 'versions', 
+    label: 'Versions', 
+    icon: FileArchive,
+    description: 'Gestion des versions du projet'
+  },
+  { 
+    id: 'docs', 
+    label: 'Documentation', 
+    icon: Book,
+    description: 'Documentation technique'
+  },
+  { 
+    id: 'envs', 
+    label: 'Environnements', 
+    icon: Settings2,
+    description: 'Configuration des environnements'
+  },
+  { 
+    id: 'deps', 
+    label: 'Dépendances', 
+    icon: Package,
+    description: 'Gestion des dépendances'
+  },
 ];
 
 export default function ProjectDetails() {
@@ -44,6 +79,7 @@ export default function ProjectDetails() {
   const [showConfigDialog, setShowConfigDialog] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('info');
+  const [hoveredTab, setHoveredTab] = useState<TabType | null>(null);
 
   React.useEffect(() => {
     if (id) {
@@ -153,7 +189,7 @@ export default function ProjectDetails() {
   if (loading) {
     return (
       <div className="min-h-screen bg-background p-8 flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <Loader2 className="w-8 h-8 animate-spin text-[#F6A469]" />
       </div>
     );
   }
@@ -209,39 +245,62 @@ export default function ProjectDetails() {
             <p className="text-white/80 mb-6">{project.description}</p>
           )}
 
-          <div className="tabs">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`tab ${
-                  activeTab === tab.id ? 'tab-active' : 'tab-inactive'
-                }`}
-              >
-                <tab.icon className="w-4 h-4" />
-                {tab.label}
-                {tab.badge && (
-                  <motion.div
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    className="tab-badge"
-                  />
-                )}
-              </button>
-            ))}
-          </div>
+          <div className="relative">
+            {/* Tabs Navigation */}
+            <div className="flex overflow-x-auto pb-4 mb-6 gap-2">
+              {tabs.map((tab) => {
+                const isActive = activeTab === tab.id;
+                const Icon = tab.icon;
+                
+                return (
+                  <motion.button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    onMouseEnter={() => setHoveredTab(tab.id)}
+                    onMouseLeave={() => setHoveredTab(null)}
+                    className={`relative flex items-center gap-2 px-4 py-2 rounded-xl transition-all ${
+                      isActive 
+                        ? 'bg-[#F6A469] text-[#1a1f2e] shadow-lg shadow-[#F6A469]/20' 
+                        : 'hover:bg-white/10'
+                    }`}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                  >
+                    <Icon className="w-4 h-4" />
+                    <span className="whitespace-nowrap">{tab.label}</span>
+                    
+                    {/* Tooltip */}
+                    <AnimatePresence>
+                      {hoveredTab === tab.id && !isActive && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 8 }}
+                          className="absolute left-1/2 -translate-x-1/2 -bottom-12 bg-white/10 backdrop-blur-sm px-3 py-1.5 rounded-lg text-sm whitespace-nowrap z-50"
+                        >
+                          {tab.description}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.button>
+                );
+              })}
+            </div>
 
-          <div className="tab-content">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeTab}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-              >
-                {renderTabContent()}
-              </motion.div>
-            </AnimatePresence>
+            {/* Tab Content */}
+            <div className="relative">
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={activeTab}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  {renderTabContent()}
+                </motion.div>
+              </AnimatePresence>
+            </div>
           </div>
         </motion.div>
       </div>
