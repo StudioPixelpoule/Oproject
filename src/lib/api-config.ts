@@ -45,8 +45,11 @@ export function parseGitHubUrl(url: string | null | undefined): { owner: string;
 
   try {
     // Clean up the URL first
-    const cleanUrl = url.trim().replace(/\/$/, '');
-
+    let cleanUrl = url.trim().replace(/\/$/, '');
+    
+    // Correction pour divers formats erronés
+    cleanUrl = cleanUrl.replace(/\.(gi|gitt?)$/, '.git');
+    
     // Common patterns for GitHub URLs
     const patterns = [
       // HTTPS URLs
@@ -55,6 +58,8 @@ export function parseGitHubUrl(url: string | null | undefined): { owner: string;
       /^git@github\.com:([^\/]+)\/([^\/\.]+)(?:\.git)?$/,
       // Raw URLs
       /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/,
+      // Pattern plus permissif pour capturer les erreurs courantes
+      /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/]+?)(?:\.[a-z]{1,4})?$/,
     ];
 
     for (const pattern of patterns) {
@@ -62,7 +67,7 @@ export function parseGitHubUrl(url: string | null | undefined): { owner: string;
       if (match) {
         const [, owner, repo] = match;
         
-        // Validate owner and repo
+        // Validation owner et repo
         if (!owner || !repo) {
           console.error('Invalid GitHub URL: missing owner or repo');
           return null;
@@ -74,9 +79,9 @@ export function parseGitHubUrl(url: string | null | undefined): { owner: string;
           return null;
         }
 
-        // Remove .git suffix if present
-        const cleanRepo = repo.replace(/\.git$/, '');
-
+        // Nettoyage supplémentaire du nom du repo
+        const cleanRepo = repo.replace(/\.[a-z]{1,4}$/, '');
+        
         return {
           owner: owner,
           repo: cleanRepo

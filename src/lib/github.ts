@@ -13,7 +13,7 @@ class GitHubAPIError extends Error {
 }
 
 // Force development mode to handle CORS issues
-const isDevelopment = import.meta.env.DEV || true;
+const isDevelopment = true; // Force le mode développement pour éviter les problèmes CORS
 
 // Contenu de secours pour les fichiers communs
 const fallbackFiles = {

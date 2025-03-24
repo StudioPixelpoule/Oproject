@@ -60,12 +60,14 @@ export default function ProjectConfigDialog({ project, onClose, onSave }: Projec
 
       if (!githubUrl) {
         setGithubError('URL GitHub requise');
+        setLoadingStack(false);
         return;
       }
 
       const repoInfo = parseGitHubUrl(githubUrl);
       if (!repoInfo) {
         setGithubError('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
+        setLoadingStack(false);
         return;
       }
 
