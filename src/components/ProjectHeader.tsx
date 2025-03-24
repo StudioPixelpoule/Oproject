@@ -1,5 +1,5 @@
 import React from 'react';
-import { Github, ExternalLink, Database, Trash2 } from 'lucide-react';
+import { Github, ExternalLink, Database, Trash2, Cloud } from 'lucide-react';
 import type { Project } from '../types/database';
 
 interface ProjectHeaderProps {
@@ -41,6 +41,17 @@ export default function ProjectHeader({ project, onDelete }: ProjectHeaderProps)
           >
             <ExternalLink className="w-5 h-5" />
             Site
+          </a>
+        )}
+        {project.hosting_url && (
+          <a
+            href={project.hosting_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-secondary flex items-center gap-2"
+          >
+            <Cloud className="w-5 h-5" />
+            Hébergement
           </a>
         )}
         {project.database_provider === 'supabase' && project.supabase_url && (

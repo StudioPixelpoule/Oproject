@@ -1,7 +1,10 @@
+import { z } from 'zod';
+
 export type ProjectType = 'webapp' | 'mobile' | 'autre';
 export type ProjectStatus = 'à faire' | 'en cours' | 'terminé' | 'en pause';
 export type TaskStatus = 'à faire' | 'en cours' | 'fait';
 export type DatabaseProvider = 'supabase' | 'firebase' | 'mongodb' | 'mysql' | 'postgresql';
+export type HostingProvider = 'netlify' | 'vercel' | 'heroku' | 'aws' | 'gcp' | 'azure';
 
 export interface AIProvider {
   name: string;
@@ -27,6 +30,38 @@ export const AI_PROVIDERS: AIProvider[] = [
   },
 ];
 
+export const HOSTING_PROVIDERS: HostingProvider[] = [
+  'netlify',
+  'vercel',
+  'heroku',
+  'aws',
+  'gcp',
+  'azure',
+];
+
+export const projectSchema = z.object({
+  title: z.string().min(1, 'Le titre est requis'),
+  description: z.string().optional(),
+  type: z.enum(['webapp', 'mobile', 'autre'] as const),
+  status: z.enum(['à faire', 'en cours', 'terminé', 'en pause'] as const),
+  start_date: z.string().optional().nullable(),
+  deadline: z.string().optional().nullable(),
+  stack: z.string().optional(),
+  github_url: z.string().url('URL GitHub invalide').optional().nullable(),
+  deploy_url: z.string().url('URL de déploiement invalide').optional().nullable(),
+  hosting_provider: z.enum(['netlify', 'vercel', 'heroku', 'aws', 'gcp', 'azure'] as const).optional().nullable(),
+  hosting_url: z.string().url('URL de gestion invalide').optional().nullable(),
+  database_provider: z.enum(['supabase', 'firebase', 'mongodb', 'mysql', 'postgresql'] as const).optional().nullable(),
+  database_name: z.string().optional().nullable(),
+  supabase_url: z.string().url('URL Supabase invalide').optional().nullable(),
+  local_path: z.string().optional().nullable(),
+  ai_provider: z.string().optional().nullable(),
+  ai_model: z.string().optional().nullable(),
+  ai_api_key: z.string().optional().nullable(),
+});
+
+export type ProjectFormData = z.infer<typeof projectSchema>;
+
 export interface Project {
   id: string;
   title: string;
@@ -38,6 +73,8 @@ export interface Project {
   stack?: string;
   github_url?: string;
   deploy_url?: string;
+  hosting_provider?: HostingProvider;
+  hosting_url?: string;
   database_provider?: DatabaseProvider;
   database_name?: string;
   supabase_url?: string;

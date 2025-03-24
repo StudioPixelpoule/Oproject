@@ -1,17 +1,50 @@
 import OpenAI from 'openai';
 
-const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
+class OpenAIClientError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OpenAIClientError';
+  }
+}
 
-// Create OpenAI client only if API key is available
-export const openai = apiKey ? new OpenAI({
-  apiKey,
-  dangerouslyAllowBrowser: true,
-}) : null;
+function createOpenAIClient() {
+  try {
+    const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
+    
+    if (!apiKey) {
+      throw new OpenAIClientError('Clé API OpenAI non configurée. Veuillez ajouter VITE_OPENAI_API_KEY dans votre fichier .env.');
+    }
+
+    // Validate OpenAI API key format
+    if (!apiKey.startsWith('sk-') || apiKey.length < 40) {
+      throw new OpenAIClientError('Format de clé API OpenAI invalide. La clé doit commencer par "sk-" et contenir au moins 40 caractères.');
+    }
+
+    return new OpenAI({
+      apiKey,
+      dangerouslyAllowBrowser: true,
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new OpenAIClientError(error.message);
+    }
+    throw new OpenAIClientError('Erreur lors de la création du client OpenAI');
+  }
+}
+
+// Create OpenAI client
+let openai: OpenAI | null = null;
+try {
+  openai = createOpenAIClient();
+} catch (error) {
+  console.error('Error creating OpenAI client:', error);
+  // Don't throw here, let the functions handle the null client
+}
 
 export async function generateDocumentation(files: { name: string; content: string }[]) {
   try {
     if (!openai) {
-      throw new Error('OpenAI API key not configured. Please add VITE_OPENAI_API_KEY to your environment variables.');
+      throw new OpenAIClientError('Client OpenAI non configuré. Veuillez vérifier votre clé API dans les variables d\'environnement.');
     }
 
     // First, prepare a structured summary of the files
@@ -95,6 +128,9 @@ ${files.map(f => `- \`${f.name}\``).join('\n')}
 `;
   } catch (error) {
     console.error('Error generating documentation:', error);
+    if (error instanceof OpenAIClientError) {
+      throw error;
+    }
     if (error instanceof Error) {
       throw new Error(`Erreur de génération de la documentation: ${error.message}`);
     }

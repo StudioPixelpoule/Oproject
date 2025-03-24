@@ -1,31 +1,13 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { X } from 'lucide-react';
-import type { Project, ProjectType, ProjectStatus, DatabaseProvider } from '../types/database';
-
-const projectSchema = z.object({
-  title: z.string().min(1, 'Le titre est requis'),
-  description: z.string().optional(),
-  type: z.enum(['webapp', 'mobile', 'autre'] as const),
-  status: z.enum(['à faire', 'en cours', 'terminé', 'en pause'] as const),
-  start_date: z.string().optional().nullable(),
-  deadline: z.string().optional().nullable(),
-  stack: z.string().optional(),
-  github_url: z.string().url('URL GitHub invalide').optional().nullable(),
-  deploy_url: z.string().url('URL de déploiement invalide').optional().nullable(),
-  database_provider: z.enum(['supabase', 'firebase', 'mongodb', 'mysql', 'postgresql'] as const).optional().nullable(),
-  database_name: z.string().optional().nullable(),
-  supabase_url: z.string().url('URL Supabase invalide').optional().nullable(),
-  local_path: z.string().optional().nullable(),
-  ai_provider: z.string().optional().nullable(),
-  ai_model: z.string().optional().nullable(),
-  ai_api_key: z.string().optional().nullable(),
-});
-
-type ProjectFormData = z.infer<typeof projectSchema>;
+import { X, Loader2, AlertCircle } from 'lucide-react';
+import { fetchGitHubContent, fetchFileContent } from '../lib/github';
+import type { Project } from '../types/database';
+import { projectSchema, AI_PROVIDERS, HOSTING_PROVIDERS } from '../types/database';
+import type { ProjectFormData } from '../types/database';
+import toast from 'react-hot-toast';
 
 interface ProjectConfigDialogProps {
   project: Project;
@@ -34,7 +16,10 @@ interface ProjectConfigDialogProps {
 }
 
 export default function ProjectConfigDialog({ project, onClose, onSave }: ProjectConfigDialogProps) {
-  const { register, handleSubmit, formState: { errors } } = useForm<ProjectFormData>({
+  const [loadingStack, setLoadingStack] = useState(false);
+  const [githubError, setGithubError] = useState<string | null>(null);
+  
+  const { register, handleSubmit, formState: { errors, isSubmitting }, control, setValue, watch } = useForm<ProjectFormData>({
     resolver: zodResolver(projectSchema),
     defaultValues: {
       title: project.title,
@@ -46,6 +31,8 @@ export default function ProjectConfigDialog({ project, onClose, onSave }: Projec
       stack: project.stack,
       github_url: project.github_url,
       deploy_url: project.deploy_url,
+      hosting_provider: project.hosting_provider,
+      hosting_url: project.hosting_url,
       database_provider: project.database_provider,
       database_name: project.database_name,
       supabase_url: project.supabase_url,
@@ -56,152 +43,353 @@ export default function ProjectConfigDialog({ project, onClose, onSave }: Projec
     },
   });
 
+  const githubUrl = useWatch({ control, name: 'github_url' });
+  const selectedProvider = useWatch({ control, name: 'ai_provider' });
+
+  useEffect(() => {
+    if (githubUrl) {
+      detectStackFromGitHub();
+    }
+  }, [githubUrl]);
+
+  const detectStackFromGitHub = async () => {
+    try {
+      setLoadingStack(true);
+      setGithubError(null);
+
+      if (!githubUrl) {
+        setGithubError('URL GitHub requise');
+        return;
+      }
+
+      const url = githubUrl as string;
+      const match = url.match(/github\.com\/([^\/]+)\/([^\/\.]+)/);
+      if (!match) {
+        setGithubError('Format d\'URL GitHub invalide');
+        return;
+      }
+
+      const [, owner, repo] = match;
+      const contents = await fetchGitHubContent(owner, repo);
+      const packageJsonFile = contents.find(file => file.name === 'package.json');
+
+      if (!packageJsonFile) {
+        throw new Error('package.json introuvable dans le repository');
+      }
+
+      const content = await fetchFileContent(packageJsonFile.download_url);
+      const packageJson = JSON.parse(content);
+
+      const dependencies = [
+        ...Object.keys(packageJson.dependencies || {}),
+        ...Object.keys(packageJson.devDependencies || {})
+      ];
+
+      const techMapping: Record<string, string> = {
+        'react': 'React',
+        'vue': 'Vue.js',
+        'angular': 'Angular',
+        'next': 'Next.js',
+        'nuxt': 'Nuxt.js',
+        'typescript': 'TypeScript',
+        'tailwindcss': 'Tailwind CSS',
+        'express': 'Express',
+        'nestjs': 'NestJS',
+        '@supabase/supabase-js': 'Supabase',
+        'firebase': 'Firebase',
+        'mongodb': 'MongoDB',
+        'mysql2': 'MySQL',
+        'pg': 'PostgreSQL'
+      };
+
+      const detectedTech = dependencies
+        .map(dep => {
+          for (const [pattern, tech] of Object.entries(techMapping)) {
+            if (dep.includes(pattern)) return tech;
+          }
+          return null;
+        })
+        .filter((tech): tech is string => tech !== null);
+
+      const uniqueTech = Array.from(new Set(detectedTech));
+      setValue('stack', uniqueTech.join(', '));
+
+    } catch (error) {
+      console.error('Error detecting stack:', error);
+      if (error instanceof Error) {
+        setGithubError(error.message);
+      } else {
+        setGithubError('Erreur lors de la détection de la stack technique');
+      }
+    } finally {
+      setLoadingStack(false);
+    }
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="modal"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
     >
       <motion.div
-        initial={{ scale: 0.95 }}
-        animate={{ scale: 1 }}
-        exit={{ scale: 0.95 }}
-        className="modal-content"
+        initial={{ scale: 0.95, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.95, y: 20 }}
+        className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-[#1a1f2e] rounded-xl border border-white/10 shadow-2xl"
       >
-        <div className="flex items-center justify-between mb-6">
+        <div className="sticky top-0 z-50 flex items-center justify-between p-6 bg-[#1a1f2e] border-b border-white/10">
           <h2 className="text-xl font-bold">Configuration du projet</h2>
-          <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-lg">
+          <button 
+            onClick={onClose} 
+            className="p-2 hover:bg-white/5 rounded-lg transition-colors"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit(onSave)} className="space-y-6">
-          <div>
-            <label className="block text-sm font-medium mb-2">Titre*</label>
-            <input {...register('title')} type="text" className="input" />
-            {errors.title && (
-              <p className="mt-1 text-sm text-red-500">{errors.title.message}</p>
-            )}
-          </div>
+        <div className="p-6">
+          <form onSubmit={handleSubmit(onSave)} className="space-y-8">
+            {/* Informations générales */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-[#F6A469]">Informations générales</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">Titre*</label>
+                  <input {...register('title')} type="text" className="input" />
+                  {errors.title && (
+                    <p className="mt-1 text-sm text-red-500">{errors.title.message}</p>
+                  )}
+                </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-2">Description</label>
-            <textarea {...register('description')} className="input min-h-[100px]" />
-          </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2">Type</label>
+                  <select {...register('type')} className="input">
+                    <option value="webapp" className="bg-background">Application Web</option>
+                    <option value="mobile" className="bg-background">Application Mobile</option>
+                    <option value="autre" className="bg-background">Autre</option>
+                  </select>
+                </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label className="block text-sm font-medium mb-2">Type</label>
-              <select {...register('type')} className="input">
-                <option value="webapp">Application Web</option>
-                <option value="mobile">Application Mobile</option>
-                <option value="autre">Autre</option>
-              </select>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-2">Description</label>
+                  <textarea 
+                    {...register('description')} 
+                    className="input min-h-[100px]" 
+                    placeholder="Description du projet..."
+                  />
+                </div>
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium mb-2">Statut</label>
-              <select {...register('status')} className="input">
-                <option value="à faire">À faire</option>
-                <option value="en cours">En cours</option>
-                <option value="terminé">Terminé</option>
-                <option value="en pause">En pause</option>
-              </select>
+            {/* Statut et dates */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-[#F6A469]">Statut et dates</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">Statut</label>
+                  <select {...register('status')} className="input">
+                    <option value="à faire" className="bg-background">À faire</option>
+                    <option value="en cours" className="bg-background">En cours</option>
+                    <option value="terminé" className="bg-background">Terminé</option>
+                    <option value="en pause" className="bg-background">En pause</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2">Date de début</label>
+                  <input {...register('start_date')} type="date" className="input" />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2">Date de fin</label>
+                  <input {...register('deadline')} type="date" className="input" />
+                </div>
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium mb-2">Date de début</label>
-              <input {...register('start_date')} type="date" className="input" />
+            {/* URLs et chemins */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-[#F6A469]">URLs et chemins</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">URL GitHub</label>
+                  <input {...register('github_url')} type="url" className="input" />
+                  {(errors.github_url || githubError) && (
+                    <div className="flex items-center gap-2 mt-2 text-red-500 text-sm">
+                      <AlertCircle className="w-4 h-4" />
+                      <p>{errors.github_url?.message || githubError}</p>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2">URL de déploiement</label>
+                  <input {...register('deploy_url')} type="url" className="input" />
+                  {errors.deploy_url && (
+                    <p className="mt-1 text-sm text-red-500">{errors.deploy_url.message}</p>
+                  )}
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-2">Chemin local</label>
+                  <input {...register('local_path')} type="text" className="input" />
+                </div>
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium mb-2">Date de fin</label>
-              <input {...register('deadline')} type="date" className="input" />
-            </div>
-          </div>
+            {/* Hébergement */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-[#F6A469]">Hébergement</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">Fournisseur</label>
+                  <select {...register('hosting_provider')} className="input">
+                    <option value="" className="bg-background">Sélectionner un fournisseur</option>
+                    {HOSTING_PROVIDERS.map(provider => (
+                      <option 
+                        key={provider} 
+                        value={provider}
+                        className="bg-background capitalize"
+                      >
+                        {provider}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-2">Stack technique</label>
-            <input {...register('stack')} type="text" className="input" placeholder="React, Node.js, TypeScript..." />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label className="block text-sm font-medium mb-2">URL GitHub</label>
-              <input {...register('github_url')} type="url" className="input" />
-              {errors.github_url && (
-                <p className="mt-1 text-sm text-red-500">{errors.github_url.message}</p>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium mb-2">URL de déploiement</label>
-              <input {...register('deploy_url')} type="url" className="input" />
-              {errors.deploy_url && (
-                <p className="mt-1 text-sm text-red-500">{errors.deploy_url.message}</p>
-              )}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label className="block text-sm font-medium mb-2">Base de données</label>
-              <select {...register('database_provider')} className="input">
-                <option value="">Aucune</option>
-                <option value="supabase">Supabase</option>
-                <option value="firebase">Firebase</option>
-                <option value="mongodb">MongoDB</option>
-                <option value="mysql">MySQL</option>
-                <option value="postgresql">PostgreSQL</option>
-              </select>
+                <div>
+                  <label className="block text-sm font-medium mb-2">URL de gestion</label>
+                  <input {...register('hosting_url')} type="url" className="input" />
+                  {errors.hosting_url && (
+                    <p className="mt-1 text-sm text-red-500">{errors.hosting_url.message}</p>
+                  )}
+                </div>
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium mb-2">Nom de la base</label>
-              <input {...register('database_name')} type="text" className="input" />
+            {/* Base de données */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-[#F6A469]">Base de données</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">Fournisseur</label>
+                  <select {...register('database_provider')} className="input">
+                    <option value="" className="bg-background">Aucun</option>
+                    <option value="supabase" className="bg-background">Supabase</option>
+                    <option value="firebase" className="bg-background">Firebase</option>
+                    <option value="mongodb" className="bg-background">MongoDB</option>
+                    <option value="mysql" className="bg-background">MySQL</option>
+                    <option value="postgresql" className="bg-background">PostgreSQL</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2">Nom de la base</label>
+                  <input {...register('database_name')} type="text" className="input" />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-2">URL Supabase</label>
+                  <input {...register('supabase_url')} type="url" className="input" />
+                  {errors.supabase_url && (
+                    <p className="mt-1 text-sm text-red-500">{errors.supabase_url.message}</p>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-2">URL Supabase</label>
-            <input {...register('supabase_url')} type="url" className="input" />
-            {errors.supabase_url && (
-              <p className="mt-1 text-sm text-red-500">{errors.supabase_url.message}</p>
-            )}
-          </div>
+            {/* Intelligence Artificielle */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-[#F6A469]">Intelligence Artificielle</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">Fournisseur IA</label>
+                  <select {...register('ai_provider')} className="input">
+                    <option value="" className="bg-background">Sélectionner un fournisseur</option>
+                    {AI_PROVIDERS.map(provider => (
+                      <option 
+                        key={provider.name} 
+                        value={provider.name}
+                        className="bg-background"
+                      >
+                        {provider.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-2">Chemin local</label>
-            <input {...register('local_path')} type="text" className="input" />
-          </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2">Modèle IA</label>
+                  <select 
+                    {...register('ai_model')} 
+                    className="input"
+                    disabled={!selectedProvider}
+                  >
+                    <option value="" className="bg-background">Sélectionner un modèle</option>
+                    {selectedProvider && AI_PROVIDERS
+                      .find(p => p.name === selectedProvider)
+                      ?.models.map(model => (
+                        <option 
+                          key={model} 
+                          value={model}
+                          className="bg-background"
+                        >
+                          {model}
+                        </option>
+                      ))
+                    }
+                  </select>
+                </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label className="block text-sm font-medium mb-2">Fournisseur IA</label>
-              <input {...register('ai_provider')} type="text" className="input" />
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium mb-2">Clé API IA</label>
+                  <input {...register('ai_api_key')} type="password" className="input" />
+                </div>
+              </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium mb-2">Modèle IA</label>
-              <input {...register('ai_model')} type="text" className="input" />
+            {/* Stack technique */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold text-[#F6A469]">Stack technique</h3>
+              <div className="relative">
+                <input 
+                  {...register('stack')} 
+                  type="text" 
+                  className="input pr-10" 
+                  placeholder="React, Node.js, TypeScript..."
+                />
+                {loadingStack && (
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <Loader2 className="w-4 h-4 animate-spin text-[#F6A469]" />
+                  </div>
+                )}
+              </div>
+              <p className="text-sm text-white/60">
+                La stack technique est détectée automatiquement à partir du fichier package.json de votre repository GitHub
+              </p>
             </div>
-          </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-2">Clé API IA</label>
-            <input {...register('ai_api_key')} type="password" className="input" />
-          </div>
-
-          <div className="flex justify-end gap-4 pt-4">
-            <button type="button" onClick={onClose} className="btn-secondary">
-              Annuler
-            </button>
-            <button type="submit" className="btn-primary">
-              Enregistrer
-            </button>
-          </div>
-        </form>
+            <div className="sticky bottom-0 flex justify-end gap-4 pt-4 border-t border-white/10 bg-[#1a1f2e] pb-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="btn-secondary"
+                disabled={isSubmitting}
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? 'Enregistrement...' : 'Enregistrer'}
+              </button>
+            </div>
+          </form>
+        </div>
       </motion.div>
     </motion.div>
   );
