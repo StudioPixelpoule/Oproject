@@ -2,8 +2,8 @@ import { z } from 'zod';
 
 // Schema for validating environment variables
 const envSchema = z.object({
-  VITE_GITHUB_TOKEN: z.string().min(1, 'GitHub token is required'),
-  VITE_OPENAI_API_KEY: z.string().min(1, 'OpenAI API key is required'),
+  VITE_GITHUB_TOKEN: z.string().optional(),
+  VITE_OPENAI_API_KEY: z.string().optional(),
   VITE_SUPABASE_URL: z.string().url('Invalid Supabase URL'),
   VITE_SUPABASE_ANON_KEY: z.string().min(1, 'Supabase anonymous key is required'),
 });
@@ -29,45 +29,89 @@ export function validateEnvConfig(): EnvConfig {
   }
 }
 
-// Function to get GitHub token with validation
-export function getGitHubToken(): string {
-  const token = import.meta.env.VITE_GITHUB_TOKEN;
-  if (!token) {
-    throw new Error('Token GitHub non configuré. Veuillez ajouter VITE_GITHUB_TOKEN dans votre fichier .env.');
-  }
-  if (!isValidGitHubToken(token)) {
-    throw new Error('Format de token GitHub invalide. Le token doit être un token d\'accès personnel valide.');
-  }
-  return token;
+// Function to get GitHub token
+export function getGitHubToken(): string | null {
+  return import.meta.env.VITE_GITHUB_TOKEN || null;
 }
 
-// Function to get OpenAI API key with validation
-export function getOpenAIKey(): string {
-  const key = import.meta.env.VITE_OPENAI_API_KEY;
-  if (!key) {
-    throw new Error('Clé API OpenAI non configurée. Veuillez ajouter VITE_OPENAI_API_KEY dans votre fichier .env.');
-  }
-  if (!isValidOpenAIKey(key)) {
-    throw new Error('Format de clé API OpenAI invalide. La clé doit commencer par "sk-" suivi de caractères alphanumériques.');
-  }
-  return key;
+// Function to get OpenAI API key
+export function getOpenAIKey(): string | null {
+  return import.meta.env.VITE_OPENAI_API_KEY || null;
 }
 
-// Function to validate GitHub token format
-export function isValidGitHubToken(token: string | undefined): boolean {
-  if (!token) return false;
-  
-  // GitHub tokens can be:
-  // 1. Classic tokens (40 hex characters)
-  // 2. Fine-grained tokens (starts with 'github_pat_')
-  // 3. OAuth tokens (starts with 'gho_')
-  // 4. Personal access tokens (starts with 'ghp_')
-  return /^(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}|gho_[a-zA-Z0-9]{36}|[a-f0-9]{40})$/i.test(token);
+// Function to parse GitHub URL
+export function parseGitHubUrl(url: string | null | undefined): { owner: string; repo: string } | null {
+  if (!url) return null;
+
+  try {
+    // Clean up the URL first
+    const cleanUrl = url.trim().replace(/\/$/, '');
+
+    // Common patterns for GitHub URLs
+    const patterns = [
+      // HTTPS URLs
+      /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/,
+      // Git URLs
+      /^git@github\.com:([^\/]+)\/([^\/\.]+)(?:\.git)?$/,
+      // Raw URLs
+      /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/,
+    ];
+
+    for (const pattern of patterns) {
+      const match = cleanUrl.match(pattern);
+      if (match) {
+        const [, owner, repo] = match;
+        
+        // Validate owner and repo
+        if (!owner || !repo) {
+          console.error('Invalid GitHub URL: missing owner or repo');
+          return null;
+        }
+
+        // Basic validation
+        if (owner.length < 1 || repo.length < 1) {
+          console.error('Invalid GitHub URL: owner or repo too short');
+          return null;
+        }
+
+        // Remove .git suffix if present
+        const cleanRepo = repo.replace(/\.git$/, '');
+
+        return {
+          owner: owner,
+          repo: cleanRepo
+        };
+      }
+    }
+
+    console.error('URL does not match any known GitHub URL pattern:', url);
+    return null;
+  } catch (error) {
+    console.error('Error parsing GitHub URL:', error);
+    return null;
+  }
 }
 
-// Function to validate OpenAI API key format
-export function isValidOpenAIKey(key: string | undefined): boolean {
-  if (!key) return false;
-  // OpenAI API keys start with 'sk-' and are followed by alphanumeric characters
-  return /^sk-[a-zA-Z0-9]{48}$/.test(key);
+// Function to test GitHub URL
+export function testGitHubUrl(url: string): { isValid: boolean; message: string } {
+  try {
+    const result = parseGitHubUrl(url);
+    
+    if (!result) {
+      return {
+        isValid: false,
+        message: 'URL GitHub invalide. Format attendu: https://github.com/owner/repo'
+      };
+    }
+
+    return {
+      isValid: true,
+      message: `URL valide. Propriétaire: ${result.owner}, Repository: ${result.repo}`
+    };
+  } catch (error) {
+    return {
+      isValid: false,
+      message: error instanceof Error ? error.message : 'Erreur lors de la validation de l\'URL GitHub'
+    };
+  }
 }

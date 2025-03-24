@@ -4,6 +4,7 @@ import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { X, Loader2, AlertCircle } from 'lucide-react';
 import { fetchGitHubContent, fetchFileContent } from '../lib/github';
+import { parseGitHubUrl } from '../lib/api-config';
 import type { Project } from '../types/database';
 import { projectSchema, AI_PROVIDERS, HOSTING_PROVIDERS } from '../types/database';
 import type { ProjectFormData } from '../types/database';
@@ -62,29 +63,42 @@ export default function ProjectConfigDialog({ project, onClose, onSave }: Projec
         return;
       }
 
-      const url = githubUrl as string;
-      const match = url.match(/github\.com\/([^\/]+)\/([^\/\.]+)/);
-      if (!match) {
-        setGithubError('Format d\'URL GitHub invalide');
+      const repoInfo = parseGitHubUrl(githubUrl);
+      if (!repoInfo) {
+        setGithubError('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
         return;
       }
 
-      const [, owner, repo] = match;
-      const contents = await fetchGitHubContent(owner, repo);
-      const packageJsonFile = contents.find(file => file.name === 'package.json');
+      const { owner, repo } = repoInfo;
 
+      // Fetch repository contents
+      const contents = await fetchGitHubContent(owner, repo);
+      if (!contents || contents.length === 0) {
+        throw new Error('Impossible d\'accéder au contenu du repository. Vérifiez l\'URL et les permissions.');
+      }
+
+      // Find package.json
+      const packageJsonFile = contents.find(file => file.name === 'package.json');
       if (!packageJsonFile) {
         throw new Error('package.json introuvable dans le repository');
       }
 
+      // Get package.json content
       const content = await fetchFileContent(packageJsonFile.download_url);
-      const packageJson = JSON.parse(content);
+      let packageJson;
+      try {
+        packageJson = JSON.parse(content);
+      } catch (error) {
+        throw new Error('Erreur lors de la lecture du package.json. Vérifiez que le fichier est valide.');
+      }
 
+      // Extract dependencies
       const dependencies = [
         ...Object.keys(packageJson.dependencies || {}),
         ...Object.keys(packageJson.devDependencies || {})
       ];
 
+      // Map dependencies to tech stack
       const techMapping: Record<string, string> = {
         'react': 'React',
         'vue': 'Vue.js',
@@ -99,13 +113,68 @@ export default function ProjectConfigDialog({ project, onClose, onSave }: Projec
         'firebase': 'Firebase',
         'mongodb': 'MongoDB',
         'mysql2': 'MySQL',
-        'pg': 'PostgreSQL'
+        'pg': 'PostgreSQL',
+        'vite': 'Vite',
+        'webpack': 'Webpack',
+        'jest': 'Jest',
+        'vitest': 'Vitest',
+        'cypress': 'Cypress',
+        'playwright': 'Playwright',
+        'storybook': 'Storybook',
+        'graphql': 'GraphQL',
+        'apollo': 'Apollo',
+        'prisma': 'Prisma',
+        'sequelize': 'Sequelize',
+        'typeorm': 'TypeORM',
+        'redux': 'Redux',
+        'mobx': 'MobX',
+        'zustand': 'Zustand',
+        'jotai': 'Jotai',
+        'recoil': 'Recoil',
+        'styled-components': 'Styled Components',
+        'emotion': 'Emotion',
+        'sass': 'Sass',
+        'less': 'Less',
+        'postcss': 'PostCSS',
+        'eslint': 'ESLint',
+        'prettier': 'Prettier',
+        'babel': 'Babel',
+        'swc': 'SWC',
+        'esbuild': 'esbuild',
+        'rollup': 'Rollup',
+        'parcel': 'Parcel',
+        'docker': 'Docker',
+        'kubernetes': 'Kubernetes',
+        'aws-sdk': 'AWS SDK',
+        'axios': 'Axios',
+        'socket.io': 'Socket.IO',
+        'websocket': 'WebSocket',
+        'three': 'Three.js',
+        'pixi.js': 'PixiJS',
+        'phaser': 'Phaser',
+        'tensorflow': 'TensorFlow',
+        'pytorch': 'PyTorch',
+        'opencv': 'OpenCV',
+        'ffmpeg': 'FFmpeg',
+        'sharp': 'Sharp',
+        'imagemagick': 'ImageMagick',
+        'pdf-lib': 'PDF Lib',
+        'puppeteer': 'Puppeteer',
+        'selenium': 'Selenium',
+        'electron': 'Electron',
+        'tauri': 'Tauri',
+        'capacitor': 'Capacitor',
+        'cordova': 'Cordova',
+        'react-native': 'React Native',
+        'flutter': 'Flutter',
+        'ionic': 'Ionic',
+        'nativescript': 'NativeScript',
       };
 
       const detectedTech = dependencies
         .map(dep => {
           for (const [pattern, tech] of Object.entries(techMapping)) {
-            if (dep.includes(pattern)) return tech;
+            if (dep.toLowerCase().includes(pattern.toLowerCase())) return tech;
           }
           return null;
         })

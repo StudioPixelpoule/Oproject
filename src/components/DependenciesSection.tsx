@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { Package, Plus, Save, X, Pencil, Trash2, ChevronDown, ChevronUp, Loader2, ExternalLink, RefreshCw, AlertCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { fetchGitHubContent, fetchFileContent } from '../lib/github';
+import { parseGitHubUrl } from '../lib/api-config';
 import toast from 'react-hot-toast';
 import * as semver from 'semver';
 
@@ -223,32 +224,30 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
         throw new Error('URL GitHub non configurée. Ajoutez l\'URL GitHub dans les paramètres du projet.');
       }
 
-      const githubUrlPattern = /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/;
-      const match = project.github_url.match(githubUrlPattern);
-      
-      if (!match) {
+      const repoInfo = parseGitHubUrl(project.github_url);
+      if (!repoInfo) {
         throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
       }
 
-      const [, owner, repo] = match;
-
-      if (!owner || !repo) {
-        throw new Error('Impossible d\'extraire le propriétaire et le nom du repository de l\'URL GitHub');
-      }
-
-      if (owner.length < 1 || repo.length < 1) {
-        throw new Error('Le propriétaire et le nom du repository ne peuvent pas être vides');
-      }
+      const { owner, repo } = repoInfo;
 
       const contents = await fetchGitHubContent(owner, repo);
-      const packageJsonFile = contents.find(file => file.name === 'package.json');
+      if (!contents || contents.length === 0) {
+        throw new Error('Impossible d\'accéder au contenu du repository. Vérifiez l\'URL et les permissions.');
+      }
 
+      const packageJsonFile = contents.find(file => file.name === 'package.json');
       if (!packageJsonFile) {
         throw new Error('package.json introuvable dans le repository.');
       }
 
       const packageJsonContent = await fetchFileContent(packageJsonFile.download_url);
-      const packageJson = JSON.parse(packageJsonContent);
+      let packageJson;
+      try {
+        packageJson = JSON.parse(packageJsonContent);
+      } catch (error) {
+        throw new Error('Erreur lors de la lecture du package.json. Vérifiez que le fichier est valide.');
+      }
 
       const depsToSync = [];
 
@@ -278,6 +277,10 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
         }
       }
 
+      if (depsToSync.length === 0) {
+        throw new Error('Aucune dépendance trouvée dans le package.json');
+      }
+
       const { error: deleteError } = await supabase
         .from('dependencies')
         .delete()
@@ -285,13 +288,11 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
 
       if (deleteError) throw deleteError;
 
-      if (depsToSync.length > 0) {
-        const { error: insertError } = await supabase
-          .from('dependencies')
-          .insert(depsToSync);
+      const { error: insertError } = await supabase
+        .from('dependencies')
+        .insert(depsToSync);
 
-        if (insertError) throw insertError;
-      }
+      if (insertError) throw insertError;
 
       toast.success('Dépendances synchronisées avec GitHub');
       fetchDependencies();

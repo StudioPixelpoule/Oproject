@@ -7,6 +7,7 @@ import { Book, Plus, Save, X, Pencil, Trash2, ChevronDown, ChevronUp, Loader2, R
 import { supabase } from '../lib/supabase';
 import { generateDocumentation } from '../lib/openai';
 import { fetchGitHubContent, fetchFileContent } from '../lib/github';
+import { parseGitHubUrl } from '../lib/api-config';
 import { useAuth } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import ReactMarkdown from 'react-markdown';
@@ -79,6 +80,87 @@ export default function DocumentationSection({ projectId }: DocumentationSection
       setLoading(false);
     }
   }
+
+  const syncWithGitHub = async () => {
+    try {
+      setSyncing(true);
+
+      if (!session?.user) {
+        throw new Error('Utilisateur non authentifié');
+      }
+
+      const { data: project, error: projectError } = await supabase
+        .from('projects')
+        .select('github_url')
+        .eq('id', projectId)
+        .single();
+
+      if (projectError) throw projectError;
+      if (!project?.github_url) {
+        throw new Error('URL GitHub non configurée. Ajoutez l\'URL GitHub dans les paramètres du projet.');
+      }
+
+      const repoInfo = parseGitHubUrl(project.github_url);
+      if (!repoInfo) {
+        throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
+      }
+
+      const { owner, repo } = repoInfo;
+
+      const contents = await fetchGitHubContent(owner, repo);
+      
+      if (!contents || contents.length === 0) {
+        throw new Error('Aucun fichier pertinent trouvé pour la documentation');
+      }
+
+      const files = await Promise.all(
+        contents.map(async (file: any) => {
+          try {
+            const content = await fetchFileContent(file.download_url);
+            return {
+              name: file.name,
+              content,
+            };
+          } catch (error) {
+            console.error(`Error fetching ${file.name}:`, error);
+            return null;
+          }
+        })
+      );
+
+      const validFiles = files.filter((f): f is { name: string; content: string } => f !== null);
+
+      if (validFiles.length === 0) {
+        throw new Error('Impossible de récupérer le contenu des fichiers');
+      }
+
+      const documentation = await generateDocumentation(validFiles);
+
+      const { error: insertError } = await supabase
+        .from('documentation')
+        .insert([{
+          project_id: projectId,
+          title: 'Documentation technique',
+          content: documentation,
+          category: 'technique',
+          user_id: session.user.id,
+        }]);
+
+      if (insertError) throw insertError;
+
+      toast.success('Documentation générée avec succès');
+      fetchDocs();
+    } catch (error) {
+      console.error('Error syncing with GitHub:', error);
+      if (error instanceof Error) {
+        toast.error(error.message);
+      } else {
+        toast.error('Erreur lors de la synchronisation avec GitHub');
+      }
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const onSubmit = async (data: DocFormData) => {
     try {
@@ -153,104 +235,10 @@ export default function DocumentationSection({ projectId }: DocumentationSection
     setExpandedDocs(newExpanded);
   };
 
-  const syncWithGitHub = async () => {
-    try {
-      setSyncing(true);
-
-      if (!session?.user) {
-        throw new Error('Utilisateur non authentifié');
-      }
-
-      const { data: project, error: projectError } = await supabase
-        .from('projects')
-        .select('github_url')
-        .eq('id', projectId)
-        .single();
-
-      if (projectError) throw projectError;
-      if (!project?.github_url) {
-        throw new Error('URL GitHub non configurée. Ajoutez l\'URL GitHub dans les paramètres du projet.');
-      }
-
-      // Validate and parse GitHub URL
-      const githubUrlPattern = /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/;
-      const match = project.github_url.match(githubUrlPattern);
-      
-      if (!match) {
-        throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
-      }
-
-      const [, owner, repo] = match;
-
-      // Additional validation for owner and repo
-      if (!owner || !repo) {
-        throw new Error('Impossible d\'extraire le propriétaire et le nom du repository de l\'URL GitHub');
-      }
-
-      if (owner.length < 1 || repo.length < 1) {
-        throw new Error('Le propriétaire et le nom du repository ne peuvent pas être vides');
-      }
-
-      // Fetch repository contents
-      const contents = await fetchGitHubContent(owner, repo);
-      
-      if (!contents || contents.length === 0) {
-        throw new Error('Aucun fichier pertinent trouvé pour la documentation');
-      }
-
-      const files = await Promise.all(
-        contents.map(async (file: any) => {
-          try {
-            const content = await fetchFileContent(file.download_url);
-            return {
-              name: file.name,
-              content,
-            };
-          } catch (error) {
-            console.error(`Error fetching ${file.name}:`, error);
-            return null;
-          }
-        })
-      );
-
-      const validFiles = files.filter((f): f is { name: string; content: string } => f !== null);
-
-      if (validFiles.length === 0) {
-        throw new Error('Impossible de récupérer le contenu des fichiers');
-      }
-
-      const documentation = await generateDocumentation(validFiles);
-
-      const { error: insertError } = await supabase
-        .from('documentation')
-        .insert([{
-          project_id: projectId,
-          title: 'Documentation technique',
-          content: documentation,
-          category: 'technique',
-          user_id: session.user.id,
-        }]);
-
-      if (insertError) throw insertError;
-
-      toast.success('Documentation générée avec succès');
-      fetchDocs();
-    } catch (error) {
-      console.error('Error syncing with GitHub:', error);
-      if (error instanceof Error) {
-        toast.error(error.message);
-      } else {
-        toast.error('Erreur lors de la synchronisation avec GitHub');
-      }
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8">
-        <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        <Loader2 className="w-6 h-6 animate-spin text-[#F6A469]" />
       </div>
     );
   }
@@ -369,7 +357,7 @@ export default function DocumentationSection({ projectId }: DocumentationSection
           >
             <div className="flex items-start justify-between">
               <div className="flex items-start gap-4 flex-1">
-                <Book className="w-5 h-5 text-primary mt-1" />
+                <Book className="w-5 h-5 text-[#F6A469] mt-1" />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-3 mb-2">
                     <h4 className="text-lg font-semibold">{doc.title}</h4>
