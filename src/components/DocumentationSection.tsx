@@ -116,6 +116,12 @@ export default function DocumentationSection({ projectId }: DocumentationSection
       const files = await Promise.all(
         contents.map(async (file: any) => {
           try {
+            // Vérifiez que download_url existe
+            if (!file.download_url) {
+              console.warn(`File ${file.name} doesn't have a download_url property`);
+              return null;
+            }
+            
             const content = await fetchFileContent(file.download_url);
             return {
               name: file.name,

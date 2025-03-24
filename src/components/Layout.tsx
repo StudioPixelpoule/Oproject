@@ -38,9 +38,8 @@ export default function Layout() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center">
-              <Link to="/dashboard" className="flex items-center gap-2">
-                <FolderGit2 className="w-8 h-8 text-white" />
-                <span className="text-xl font-bold">O.O</span>
+              <Link to="/dashboard" className="text-xl font-bold">
+                Oproject
               </Link>
             </div>
 

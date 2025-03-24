@@ -79,8 +79,10 @@ export default function ProjectConfigDialog({ project, onClose, onSave }: Projec
 
       // Find package.json
       const packageJsonFile = contents.find(file => file.name === 'package.json');
-      if (!packageJsonFile) {
-        throw new Error('package.json introuvable dans le repository');
+      if (!packageJsonFile || !packageJsonFile.download_url) {
+        console.warn('package.json file not found or download_url missing');
+        setValue('stack', 'JavaScript'); // Définir une valeur par défaut
+        throw new Error('Impossible de trouver le fichier package.json dans le repository');
       }
 
       // Get package.json content

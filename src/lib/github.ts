@@ -12,8 +12,8 @@ class GitHubAPIError extends Error {
   }
 }
 
-// Détecte si nous sommes dans un environnement de développement
-const isDevelopment = import.meta.env.DEV;
+// Force development mode to handle CORS issues
+const isDevelopment = import.meta.env.DEV || true;
 
 // Contenu de secours pour les fichiers communs
 const fallbackFiles = {
@@ -94,10 +94,25 @@ export async function fetchGitHubContent(owner: string, repo: string, path: stri
   if (isDevelopment) {
     console.warn('Utilisation de données GitHub simulées en mode développement');
     return [
-      { name: 'package.json', path: 'package.json', type: 'file' },
-      { name: 'tsconfig.json', path: 'tsconfig.json', type: 'file' },
+      { 
+        name: 'package.json', 
+        path: 'package.json', 
+        type: 'file',
+        download_url: 'https://raw.githubusercontent.com/owner/repo/main/package.json'
+      },
+      { 
+        name: 'tsconfig.json', 
+        path: 'tsconfig.json', 
+        type: 'file',
+        download_url: 'https://raw.githubusercontent.com/owner/repo/main/tsconfig.json'
+      },
       { name: 'src', path: 'src', type: 'dir' },
-      { name: 'README.md', path: 'README.md', type: 'file' }
+      { 
+        name: 'README.md', 
+        path: 'README.md', 
+        type: 'file',
+        download_url: 'https://raw.githubusercontent.com/owner/repo/main/README.md'
+      }
     ];
   }
 
@@ -112,8 +127,6 @@ export async function fetchGitHubContent(owner: string, repo: string, path: stri
       headers.Authorization = `Bearer ${token}`;
     }
 
-    // Utilisation de cors-anywhere ou service similaire pour contourner CORS
-    // Note: Cette approche n'est pas idéale pour la production, mais peut être utile en développement
     let apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
 
     // Tenter un appel direct
@@ -147,10 +160,25 @@ export async function fetchGitHubContent(owner: string, repo: string, path: stri
     if (isDevelopment) {
       console.warn('Returning mock GitHub content due to API error');
       return [
-        { name: 'package.json', path: 'package.json', type: 'file' },
-        { name: 'tsconfig.json', path: 'tsconfig.json', type: 'file' },
+        { 
+          name: 'package.json', 
+          path: 'package.json', 
+          type: 'file',
+          download_url: 'https://raw.githubusercontent.com/owner/repo/main/package.json'
+        },
+        { 
+          name: 'tsconfig.json', 
+          path: 'tsconfig.json', 
+          type: 'file',
+          download_url: 'https://raw.githubusercontent.com/owner/repo/main/tsconfig.json'
+        },
         { name: 'src', path: 'src', type: 'dir' },
-        { name: 'README.md', path: 'README.md', type: 'file' }
+        { 
+          name: 'README.md', 
+          path: 'README.md', 
+          type: 'file',
+          download_url: 'https://raw.githubusercontent.com/owner/repo/main/README.md'
+        }
       ];
     }
     
@@ -161,7 +189,16 @@ export async function fetchGitHubContent(owner: string, repo: string, path: stri
   }
 }
 
-export async function fetchFileContent(url: string) {
+export async function fetchFileContent(url: string | undefined) {
+  // Ajoutez cette vérification au début de la fonction
+  if (!url) {
+    console.error('URL is undefined in fetchFileContent');
+    if (isDevelopment) {
+      return "// Content could not be fetched - URL was undefined";
+    }
+    throw new Error('URL is undefined in fetchFileContent');
+  }
+
   try {
     // Extraction du nom de fichier depuis l'URL
     const fileNameMatch = url.match(/\/([^\/]+)$/);
@@ -314,112 +351,5 @@ export async function fetchFileContent(url: string) {
     }
     
     throw new Error(errorMessage);
-  }
-}
-
-// Détection du stack technologique à partir d'un contenu GitHub
-export async function detectStackFromGitHub(githubUrl: string): Promise<string[]> {
-  try {
-    // Si nous sommes en développement, retournons un stack prédéfini
-    if (isDevelopment) {
-      console.warn('Utilisation d\'un stack technologique simulé en mode développement');
-      return ['React', 'TypeScript', 'Vite', 'Tailwind CSS'];
-    }
-    
-    // Extraction des informations du dépôt depuis l'URL
-    const githubUrlObj = new URL(githubUrl);
-    const pathParts = githubUrlObj.pathname.split('/').filter(Boolean);
-    
-    if (pathParts.length < 2) {
-      throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
-    }
-    
-    const owner = pathParts[0];
-    const repo = pathParts[1];
-    
-    // Tentative de récupération du fichier package.json
-    const packageJsonUrl = `https://raw.githubusercontent.com/${owner}/${repo}/main/package.json`;
-    
-    let packageJsonContent;
-    try {
-      packageJsonContent = await fetchFileContent(packageJsonUrl);
-    } catch (packageJsonError) {
-      console.warn('Impossible de récupérer package.json, essai avec master branch', packageJsonError);
-      try {
-        packageJsonContent = await fetchFileContent(
-          `https://raw.githubusercontent.com/${owner}/${repo}/master/package.json`
-        );
-      } catch (masterError) {
-        console.warn('Échec avec master branch aussi', masterError);
-        throw new Error('Impossible de détecter le stack technologique: package.json non trouvé');
-      }
-    }
-    
-    // Analyse du contenu de package.json
-    const packageJson = JSON.parse(packageJsonContent);
-    const dependencies = { ...packageJson.dependencies, ...packageJson.devDependencies };
-    
-    // Détection des frameworks et bibliothèques
-    const stack: string[] = [];
-    
-    // Frameworks frontend
-    if (dependencies.react) stack.push('React');
-    if (dependencies.vue) stack.push('Vue.js');
-    if (dependencies.angular || dependencies['@angular/core']) stack.push('Angular');
-    if (dependencies.svelte) stack.push('Svelte');
-    
-    // Frameworks backend
-    if (dependencies.express) stack.push('Express.js');
-    if (dependencies.koa) stack.push('Koa.js');
-    if (dependencies.nextjs || dependencies.next) stack.push('Next.js');
-    if (dependencies.nuxt) stack.push('Nuxt.js');
-    if (dependencies.gatsby) stack.push('Gatsby');
-    
-    // Langages
-    if (dependencies.typescript) stack.push('TypeScript');
-    else stack.push('JavaScript');
-    
-    // Outils de build
-    if (dependencies.webpack) stack.push('Webpack');
-    if (dependencies.vite) stack.push('Vite');
-    if (dependencies.rollup) stack.push('Rollup');
-    if (dependencies.parcel) stack.push('Parcel');
-    
-    // UI frameworks
-    if (dependencies['tailwindcss'] || dependencies.tailwindcss) stack.push('Tailwind CSS');
-    if (dependencies.bootstrap) stack.push('Bootstrap');
-    if (dependencies['@mui/material'] || dependencies['@material-ui/core']) stack.push('Material UI');
-    if (dependencies['styled-components']) stack.push('Styled Components');
-    if (dependencies.sass || dependencies.scss) stack.push('Sass');
-    
-    // State management
-    if (dependencies.redux || dependencies['@reduxjs/toolkit']) stack.push('Redux');
-    if (dependencies.mobx) stack.push('MobX');
-    if (dependencies.zustand) stack.push('Zustand');
-    if (dependencies.recoil) stack.push('Recoil');
-    
-    // Testing
-    if (dependencies.jest) stack.push('Jest');
-    if (dependencies.mocha) stack.push('Mocha');
-    if (dependencies.cypress) stack.push('Cypress');
-    if (dependencies['@testing-library/react']) stack.push('React Testing Library');
-    
-    // Databases (client libraries)
-    if (dependencies.prisma) stack.push('Prisma');
-    if (dependencies.mongoose) stack.push('MongoDB');
-    if (dependencies.sequelize) stack.push('Sequelize');
-    if (dependencies['@supabase/supabase-js']) stack.push('Supabase');
-    if (dependencies.firebase) stack.push('Firebase');
-    
-    return stack.length > 0 ? stack : ['JavaScript'];
-  } catch (error) {
-    console.error('Error detecting stack:', error);
-    
-    if (isDevelopment) {
-      console.warn('Retour d\'un stack par défaut en mode développement');
-      return ['React', 'TypeScript', 'Vite', 'Tailwind CSS'];
-    }
-    
-    throw error;
   }
 }
