@@ -357,6 +357,7 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
       <AnimatePresence mode="popLayout">
         {showNewDependencyForm && (
           <motion.form
+            key="new-dependency-form"
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
@@ -557,6 +558,7 @@ export default function DependenciesSection({ projectId }: DependenciesSectionPr
 
         {dependencies.length === 0 && !showNewDependencyForm && (
           <motion.div
+            key="no-dependencies"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="text-center py-8 text-white/60"

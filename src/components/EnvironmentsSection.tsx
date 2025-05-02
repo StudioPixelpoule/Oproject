@@ -5,7 +5,8 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Settings2, Plus, Save, X, Pencil, Trash2, ChevronDown, ChevronUp, Loader2, Copy, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { fetchGitHubContent, fetchFileContent } from '../lib/github';
+import { fetchGitHubContent, fetchFileContent, validateGitHubUrl } from '../lib/github';
+import { parseGitHubUrl } from '../lib/api-config';
 import toast from 'react-hot-toast';
 
 const envSchema = z.object({
@@ -81,13 +82,11 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
     try {
       setSyncing(true);
 
-      // Get user ID first
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
-        throw new Error('User not authenticated');
+        throw new Error('Utilisateur non authentifié');
       }
 
-      // Fetch project details to get GitHub URL
       const { data: project, error: projectError } = await supabase
         .from('projects')
         .select('github_url')
@@ -99,30 +98,30 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
         throw new Error('URL GitHub non configurée. Ajoutez l\'URL GitHub dans les paramètres du projet.');
       }
 
-      // Validate and parse GitHub URL
-      const githubUrlPattern = /^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/\.]+)(?:\.git)?$/;
-      const match = project.github_url.match(githubUrlPattern);
-      
-      if (!match) {
-        throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
+      // Validate GitHub URL before proceeding
+      const isValidUrl = await validateGitHubUrl(project.github_url);
+      if (!isValidUrl) {
+        throw new Error(
+          'Repository GitHub inaccessible. Vérifiez que :\n' +
+          '1. L\'URL est correcte (format: https://github.com/owner/repo)\n' +
+          '2. Le repository existe et n\'est pas privé\n' +
+          '3. Vous avez les permissions nécessaires'
+        );
       }
 
-      const [, owner, repo] = match;
-
-      // Additional validation for owner and repo
-      if (!owner || !repo) {
-        throw new Error('Impossible d\'extraire le propriétaire et le nom du repository de l\'URL GitHub');
+      const repoInfo = parseGitHubUrl(project.github_url);
+      if (!repoInfo) {
+        throw new Error('Format d\'URL GitHub invalide. Format attendu: https://github.com/owner/repo');
       }
 
-      if (owner.length < 1 || repo.length < 1) {
-        throw new Error('Le propriétaire et le nom du repository ne peuvent pas être vides');
-      }
+      const { owner, repo } = repoInfo;
 
-      // Get repository contents first
+      // Get repository contents
       const contents = await fetchGitHubContent(owner, repo);
-      const envFiles = contents.filter(file => 
-        file.name.startsWith('.env') || 
-        file.name === 'package.json'
+      const envFiles = contents.filter((file: any) => 
+        file.type === 'file' && 
+        (file.name.startsWith('.env') || file.name === 'package.json') &&
+        file.download_url
       );
 
       if (envFiles.length === 0) {
@@ -131,7 +130,7 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
 
       // Fetch content of each file
       const files = await Promise.all(
-        envFiles.map(async (file) => {
+        envFiles.map(async (file: any) => {
           try {
             const content = await fetchFileContent(file.download_url);
             return {
@@ -174,12 +173,12 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
       };
 
       // Process each file
-      validFiles.forEach(file => {
+      for (const file of validFiles) {
         if (file.name === 'package.json') {
           try {
             const packageJson = JSON.parse(file.content);
             if (packageJson.scripts) {
-              Object.values(packageJson.scripts).forEach((script: string) => {
+              Object.values(packageJson.scripts).forEach((script: any) => {
                 const envVars = script.match(/\$\{?([A-Z_][A-Z0-9_]*)\}?/g);
                 if (envVars) {
                   envVars.forEach(variable => {
@@ -201,7 +200,15 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
           const targetEnv = isProduction ? variables.production : variables.development;
           Object.assign(targetEnv, vars);
         }
-      });
+      }
+
+      // Delete existing environments first
+      const { error: deleteError } = await supabase
+        .from('environments')
+        .delete()
+        .eq('project_id', projectId);
+
+      if (deleteError) throw deleteError;
 
       // Create environments
       for (const [envName, vars] of Object.entries(variables)) {
@@ -219,8 +226,8 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
         }
       }
 
+      await fetchEnvironments();
       toast.success('Environnements synchronisés avec GitHub');
-      fetchEnvironments();
     } catch (error) {
       console.error('Error syncing with GitHub:', error);
       if (error instanceof Error) {
@@ -268,7 +275,7 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
       reset();
       setEditingEnvId(null);
       setShowNewEnvForm(false);
-      fetchEnvironments();
+      await fetchEnvironments();
     } catch (error) {
       console.error('Error saving environment:', error);
       toast.error('Erreur lors de l\'enregistrement');
@@ -284,7 +291,7 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
 
       if (error) throw error;
       toast.success('Environnement supprimé');
-      fetchEnvironments();
+      await fetchEnvironments();
     } catch (error) {
       console.error('Error deleting environment:', error);
       toast.error('Erreur lors de la suppression');
@@ -375,6 +382,7 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
       <AnimatePresence mode="popLayout">
         {showNewEnvForm && (
           <motion.form
+            key="new-environment-form"
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
@@ -567,6 +575,7 @@ export default function EnvironmentsSection({ projectId }: EnvironmentsSectionPr
 
         {environments.length === 0 && !showNewEnvForm && (
           <motion.div
+            key="no-environments"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="text-center py-8 text-white/60"

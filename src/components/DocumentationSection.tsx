@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { Book, Plus, Save, X, Pencil, Trash2, ChevronDown, ChevronUp, Loader2, RefreshCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { generateDocumentation } from '../lib/openai';
-import { fetchGitHubContent, fetchFileContent } from '../lib/github';
+import { fetchGitHubContent, fetchFileContent, validateGitHubUrl } from '../lib/github';
 import { parseGitHubUrl } from '../lib/api-config';
 import { useAuth } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
@@ -100,44 +100,52 @@ export default function DocumentationSection({ projectId }: DocumentationSection
         throw new Error('URL GitHub non configurée. Ajoutez l\'URL GitHub dans les paramètres du projet.');
       }
 
+      // Validate GitHub URL before proceeding
+      const isValidUrl = await validateGitHubUrl(project.github_url);
+      if (!isValidUrl) {
+        throw new Error(
+          'Repository GitHub inaccessible. Vérifiez que :\n' +
+          '1. L\'URL est correcte (format: https://github.com/owner/repo)\n' +
+          '2. Le repository existe et n\'est pas privé\n' +
+          '3. Vous avez les permissions nécessaires'
+        );
+      }
+
       const repoInfo = parseGitHubUrl(project.github_url);
       if (!repoInfo) {
-        throw new Error('URL GitHub invalide. Format attendu: https://github.com/owner/repo');
+        throw new Error('Format d\'URL GitHub invalide. Format attendu: https://github.com/owner/repo');
       }
 
       const { owner, repo } = repoInfo;
 
+      // Fetch repository contents
       const contents = await fetchGitHubContent(owner, repo);
-      
       if (!contents || contents.length === 0) {
-        throw new Error('Aucun fichier pertinent trouvé pour la documentation');
+        throw new Error('Impossible d\'accéder au contenu du repository.');
       }
 
+      // Filter only files (ignore directories) and get their content
       const files = await Promise.all(
-        contents.map(async (file: any) => {
-          try {
-            // Vérifiez que download_url existe
-            if (!file.download_url) {
-              console.warn(`File ${file.name} doesn't have a download_url property`);
+        contents
+          .filter((item: any) => item.type === 'file' && item.download_url)
+          .map(async (file: any) => {
+            try {
+              const content = await fetchFileContent(file.download_url);
+              return {
+                name: file.name,
+                content,
+              };
+            } catch (error) {
+              console.error(`Erreur lors de la récupération de ${file.name}:`, error);
               return null;
             }
-            
-            const content = await fetchFileContent(file.download_url);
-            return {
-              name: file.name,
-              content,
-            };
-          } catch (error) {
-            console.error(`Error fetching ${file.name}:`, error);
-            return null;
-          }
-        })
+          })
       );
 
       const validFiles = files.filter((f): f is { name: string; content: string } => f !== null);
 
       if (validFiles.length === 0) {
-        throw new Error('Impossible de récupérer le contenu des fichiers');
+        throw new Error('Aucun fichier valide trouvé dans le repository.');
       }
 
       const documentation = await generateDocumentation(validFiles);

@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { X, Loader2, AlertCircle } from 'lucide-react';
-import { fetchGitHubContent, fetchFileContent } from '../lib/github';
+import { fetchGitHubContent, fetchFileContent, validateGitHubUrl } from '../lib/github';
 import { parseGitHubUrl } from '../lib/api-config';
 import type { Project } from '../types/database';
 import { projectSchema, AI_PROVIDERS, HOSTING_PROVIDERS } from '../types/database';
@@ -60,6 +60,14 @@ export default function ProjectConfigDialog({ project, onClose, onSave }: Projec
 
       if (!githubUrl) {
         setGithubError('URL GitHub requise');
+        setLoadingStack(false);
+        return;
+      }
+
+      // Validate GitHub URL before proceeding
+      const isValidUrl = await validateGitHubUrl(githubUrl);
+      if (!isValidUrl) {
+        setGithubError('URL GitHub invalide ou repository inaccessible. Vérifiez l\'URL et les permissions.');
         setLoadingStack(false);
         return;
       }
